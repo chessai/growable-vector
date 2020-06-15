@@ -1,86 +1,387 @@
+{-# language BangPatterns #-}
+{-# language CPP #-}
+{-# language FlexibleInstances #-}
+{-# language FunctionalDependencies #-}
+{-# language MagicHash #-}
+{-# language MultiParamTypeClasses #-}
+{-# language NamedFieldPuns #-}
+{-# language PolyKinds #-}
+{-# language RecordWildCards #-}
+{-# language ScopedTypeVariables #-}
+{-# language TypeFamilies #-}
 {-# language UnboxedSums #-}
 {-# language UnboxedTuples #-}
-{-# language MagicHash #-}
-{-# language TypeFamilies #-}
-{-# language PolyKinds #-}
 
+-- todo: add more doctests
+-- todo: add hedgehog tests
+-- todo: more correctness
+
+-- |
+--   = Purpose
+--   A contiguous growable array type with heap-allocated contents, written @'Vec' s a@.
+--
+--   'Vec' has /O(1)/ indexing, amortized /O(1)/ 'push' (to the end), and /O(1)/ 'pop' (from the end).
+--
+--   == A note about type variable ordering
+--   The type variables in this module will be ordered according to the following precedence list (with higher precedence meaning left-most in the forall-quantified type variables):
+--
+--     1. The 'PrimMonad' type variable, @m@
+--     2. The 'PrimState' token, @s@
+--     3. The element type, @a@
+--     4. Everything else (look at the forall)
+--
+--   This structuring is intended to document and ensure a uniform experience for users of @-XTypeApplications@.
+--
+--   == A note about ordering of arguments
+--   The arguments of functions in this module will generally be ordered as follows:
+--
+--     1. The vector
+--     2. The index (e.g. when reading/writing)
+--     3. The element
+--
+--   As an example, 'write', which has all three of these, takes the vector, then the index, then the element.
+--
+--   As another example, 'push', which does not take an index, takes the vector, then the element.
+--
+--   Any function which accepts more than one of the types in the list, or accepts a type which is not in the list, has no guarantee about its argument order.
 module Dyna
-  ( GrowableVector
+  ( Vec
+
   , new
-  , size
+  , withCapacity
+
+  , length
+  , capacity
+
+  , reserve
+  , reserveExact
+
+  , shrinkToFit
+  , shrinkTo
+
   , read
+  , get
+  , write
   , push
-  , modify
-  , swap
+  , pop
+  , extend
+  , fromFoldable
   ) where
 
 import Control.Monad
 import Control.Monad.Primitive
+import Data.Foldable (traverse_)
 import Data.Primitive
-import Data.Vector.Generic.Mutable (MVector)
 import GHC.Exts
-import Prelude hiding (read)
+import Prelude hiding (length, read)
+import qualified Data.Foldable as Foldable
 
-import qualified Data.Vector.Generic.Mutable as Vector
+import Control.Monad.ST (ST)
 
-data GrowableVector v s a = GrowableVector
-  { sizeVar :: {-# unpack #-} !(MutVar s Int)
-  , vectorVar :: {-# unpack #-} !(MutVar s (v s a))
+-- $setup
+--
+-- >>> import Control.Monad
+-- >>> assertEq :: Eq a => a -> a -> IO (); assertEq = when (x /= y) (fail "assertEq failed")
+-- >>> assertEqM :: Eq a => m a -> a -> IO (); assertEqM mx y = mx >>= \x -> assertEq x y
+--
+--   You can explicitly create a @'Vec' s a@ with 'new':
+--
+--   @
+--   v <- new
+--   @
+--
+--   ...or by using 'fromFoldable':
+--
+--   @
+--   v <- fromFoldable [1, 2]
+--   @
+--
+--   You can 'push' values onto the end of a vector (which will grow the vector as needed):
+--
+--   @
+--   v <- fromFoldable [1, 2]
+--   push v 3
+--   @
+--
+--   Popping values works in much the same way:
+--
+--   @
+--   v <- fromFoldable [1, 2]
+--   two <- pop v
+--   @
+--
+--   Example:
+--
+--   >>> vec <- Vec.new
+--   >>> push vec 1
+--   >>> push vec 2
+--
+--   >>> assertEqM (length vec) 2
+--   >>> assertEqM (read vec 0) 1
+--
+--   >>> assertEqM (pop vec) (Just 2)
+--   >>> assertEqM (length vec) 1
+
+class (PrimMonad m, s ~ PrimState m) => MonadPrim s m | m -> s
+instance MonadPrim RealWorld IO
+instance MonadPrim s (ST s)
+
+-- |
+--   = Indexing
+--   The 'Vec' type allows access to values by (0-based) index. An example will be more explicit:
+--
+--   @
+--   v <- fromFoldable [0, 2, 4, 6]
+--   two <- read v 1
+--   write v 1 7
+--   seven <- read v 1
+--   two + seven -- will print out '9'
+--   @
+--
+--   However, be careful: if you try to access an index which isn't in the 'Vec', your program will exhibit undefined behaviour (\"UB\"), either returning garbage or segfaulting. You cannot do this:
+--
+--   @
+--   v <- fromFoldable [0, 2, 4, 6]
+--   read v 6 -- this is UB
+--   @
+--
+--   If you want safe access, use 'get':
+--
+--   @
+--   v <- fromFoldable [0, 2, 4, 6]
+--   get v 1 -- 'Just' 2
+--   get v 6 -- 'Nothing'
+--   @
+--
+--   = Capacity and reallocation
+--   The capacity of a vector is the amount of space allocated for any future elements that will be added onto the vector. This is not to be confused with the /length/ of a vector, which specifies the number of actual elements within the vector. If a vector's length exceeds its capacity, its capacity will automatically be increased, but its elements will have to be reallocated.
+--
+--   For example, a vector with capacity 10 and length 0 would be an empty vector with space for 10 more elements. Pushing 10 or fewer elements onto the vector will not change its capacity or cause reallocation to occur. However, if the vector's length is increased to 11, it will have to reallocate, which can be slow. For this reason, it is recommended to use 'withCapacity' whenever possible to specify how big the vector is expected to get.
+--
+--   = Guarantees
+--   'Vec' is a (pointer, capacity, length) triplet. The pointer
+--   will never be null.
+--
+--   Because of the semantics of the GHC runtime, creating a new vector will always allocate. In particular, if you construct a 'Vec' with capacity 0 via @'new' 0@, @'fromFoldable' []@, or @'shrinkToFit'@ on an empty 'Vec', the 16-byte header to GHC 'ByteArray#' will be allocated, but nothing else (for the curious: this is needed from 'sameMutableByteArray#' to work). Similarly, if you store zero-sized types inside a 'Vec', it will not allocate space for them. /Note that in this case the 'Vec' may not report a 'capacity' of 0/. 'Vec' will allocate if and only if @'sizeOf (undefined :: a) '*' 'capacity' '>' 0@.
+--
+--   If a 'Vec' /has/ allocated memory, then the memory it points to is on the heap (as defined by GHC's allocator), and its pointer points to 'length' initialised, contiguous elements in order (i.e. what you would see if you turned it into a list), followed by @'maxCapacity' '-' 'length'@ logically uninitialised, contiguous elements.
+--
+--   'Vec' will never automatically shrink itself, even if completely empty. This ensures no unnecessary allocations or deallocations occur. Emptying a 'Vec' and then filling it back up to the same 'length' should incur no calls to the allocator. If you wish to free up unused memory, used 'shrinkToFit'.
+--
+--   'push' and 'insert' will never (re)allocate if the reported capacity is sufficient. 'push' and 'insert' /will/ (re)allocate if @'length' '==' 'capacity'@. That is, the reported capacity is completely accurate, and can be relied on. Bulk insertion methods /may/ reallocate, even when not necessary.
+--
+--   'Vec' does not guarantee any particular growth strategy when reallocating when full, nor when 'reserve' is called. The strategy is basic and may prove desirable to use a non-constant growth factor. Whatever strategy is used will of course guarantee /O(1)/ amortised push.
+--
+--   'fromFoldable' and 'withCapacity' will produce a 'Vec' with exactly the requested capacity.
+--
+--   'Vec' will not specifically overwrite any data that is removed from it, but also won't specifically preserve it. Its uninitialised memory is scratch space that it may use however it wants. It will generally just do whatever is most efficient or otherwise easy to implement. Do not rely on removed data to be erased for security purposes. Even if a 'Vec' drops out of scope, its buffer may simply be reused by another 'Vec'. Even if you zero a 'Vec's memory first, this may not actually happen when you think it does because of Garbage Collection.
+data Vec s a = Vec
+  { len :: {-# unpack #-} !(MutVar s Int)
+  , buf :: {-# unpack #-} !(MutVar s (MutablePrimArray s a))
   }
 
-size :: (MVector v a, PrimMonad m)
-  => GrowableVector v (PrimState m) a
-  -> m Int
-size = readMutVar . sizeVar
+new :: forall m s a. (MonadPrim s m, Prim a)
+  => m (Vec s a)
+new = withCapacity 0
 
-new :: (MVector v a, PrimMonad m)
+withCapacity :: forall m s a. (MonadPrim s m, Prim a)
   => Int
-  -> m (GrowableVector v (PrimState m) a)
-new sz = GrowableVector
+  -> m (Vec s a)
+withCapacity sz = Vec
   <$> newMutVar 0
-  <*> (newMutVar =<< Vector.new sz)
+  <*> (newMutVar =<< newPrimArray sz)
 
-read :: (MVector v a, PrimMonad m)
-  => GrowableVector v (PrimState m) a
+length :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
+  -> m Int
+length = readMutVar . len
+
+capacity :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
+  -> m Int
+capacity vec = do
+  maxCap <- internalMaxCapacity vec
+  takenUp <- length vec
+  pure (maxCap - takenUp)
+
+reserveExact :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
+  -> Int
+  -> m ()
+reserveExact vec additional = do
+  cap <- capacity vec
+  when (additional > cap) $ do
+    oldBuf <- internalVector vec
+    oldSize <- getSizeofMutablePrimArray oldBuf
+
+    usedCap <- length vec
+    let newSize = oldSize + additional
+
+    newBuf <- newPrimArray newSize
+    copyMutablePrimArray newBuf 0 oldBuf 0 usedCap
+
+    writeMutVar (buf vec) newBuf
+
+reserve :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
+  -> Int
+  -> m ()
+reserve vec additional = do
+  cap <- capacity vec
+  when (additional > cap) $ do
+    oldBuf <- internalVector vec
+    oldSize <- getSizeofMutablePrimArray oldBuf
+
+    usedCap <- length vec
+    let newSize = 2 * (usedCap + additional) + oldSize
+
+    newBuf <- newPrimArray newSize
+    copyMutablePrimArray newBuf 0 oldBuf 0 usedCap
+
+    writeMutVar (buf vec) newBuf
+
+shrinkToFit :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
+  -> m ()
+shrinkToFit vec = do
+  usedCap <- length vec
+  oldBuf <- internalVector vec
+  newBuf <- newPrimArray usedCap
+  copyMutablePrimArray newBuf 0 oldBuf 0 usedCap
+  writeMutVar (buf vec) newBuf
+
+shrinkTo :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
+  -> Int
+  -> m ()
+shrinkTo vec minCap = do
+  usedCap <- length vec
+  let len = max usedCap minCap
+
+  oldBuf <- internalVector vec
+  newBuf <- newPrimArray len
+  copyMutablePrimArray newBuf 0 oldBuf 0 len
+  writeMutVar (buf vec) newBuf
+
+read :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
   -> Int
   -> m a
-read g n = do
-  vec <- readMutVar (vectorVar g)
-  Vector.unsafeRead vec n
+read vec n = do
+  v <- readMutVar (buf vec)
+  readPrimArray v n
 
-push :: (MVector v a, PrimMonad m)
-  => GrowableVector v (PrimState m) a
+get :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
+  -> Int
+  -> m (Maybe a)
+get vec n = do
+  len <- length vec
+  if (n >= 0 && n < len)
+    then Just <$> read vec n
+    else pure Nothing
+
+write :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
+  -> Int
   -> a
   -> m ()
-push g x = do
-  needsResizing <- atMaxCapacity
-  when needsResizing resize
+write vec n x = do
+  v <- readMutVar (buf vec)
+  writePrimArray v n x
 
-  index <- readMutVar (sizeVar g)
-  readMutVar (vectorVar g) >>= \v -> Vector.write v index x
+push :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
+  -> a
+  -> m ()
+push vec x = do
+  needsResizing <- (\len cap -> len + 1 >= cap)
+                   <$> length vec
+                   <*> internalMaxCapacity vec
+  -- reserve (not reserveExact) will take care of
+  -- intelligent resizing.
+  when needsResizing (reserve vec 1)
 
-  modifyMutVar' (sizeVar g) (+ 1)
+  index <- length vec
+  internalVector vec >>= \v -> writePrimArray v index x
 
+  modifyMutVar' (len vec) (+ 1)
+
+pop :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
+  -> m (Maybe a)
+pop vec = do
+  lastIndex <- length vec
+  if lastIndex == 0
+    then pure Nothing
+    else do
+      modifyMutVar' (len vec) (subtract 1)
+      Just <$> read vec (lastIndex - 1)
+
+extend :: forall m s a t. (MonadPrim s m, Prim a, Foldable t)
+  => Vec s a
+  -> t a
+  -> m ()
+extend vec xs = do
+  reserve vec (Foldable.length xs)
+  traverse_ (push vec) xs
+
+fromFoldable :: forall m s a t. (MonadPrim s m, Prim a, Foldable t)
+  => t a
+  -> m (Vec s a)
+fromFoldable xs = do
+  vec <- withCapacity (Foldable.length xs)
+  internal_itraverse_ (\i x -> write vec i x) xs
+  pure vec
+
+internalVector :: (MonadPrim s m, Prim a)
+  => Vec s a
+  -> m (MutablePrimArray s a)
+internalVector = readMutVar . buf
+
+internalMaxCapacity :: (MonadPrim s m, Prim a)
+  => Vec s a
+  -> m Int
+internalMaxCapacity vec = do
+  getSizeofMutablePrimArray =<< readMutVar (buf vec)
+
+internal_ifoldr :: Foldable t
+  => (Int -> a -> b -> b)
+  -> b
+  -> t a
+  -> b
+internal_ifoldr f z xs = Foldable.foldr
+  (\x g i -> f i x (g (i + 1)))
+  (const z)
+  xs
+  0
+
+internal_itraverse_ :: (Applicative m, Foldable t)
+  => (Int -> a -> m b)
+  -> t a
+  -> m ()
+internal_itraverse_ f as = internal_ifoldr k (pure ()) as
   where
-    resize = do
-      v <- readMutVar (vectorVar g)
-      v' <- Vector.unsafeGrow v (Vector.length v)
-      writeMutVar (vectorVar g) v'
-    atMaxCapacity = do
-      sz <- readMutVar (sizeVar g)
-      len <- Vector.length <$> readMutVar (vectorVar g)
-      pure (sz + 1 >= len)
+    k i a r = f i a *> r
 
+{-
 modify :: (MVector v a, PrimMonad m)
   => GrowableVector v (PrimState m) a
   -> (a -> a)
   -> Int
   -> m ()
-modify g f ix = readMutVar (vectorVar g) >>= \v -> Vector.modify v f ix
+modify g f ix = internalVector g >>= \v -> Vector.modify v f ix
+{-# inline modify #-}
+{-# specialise modify :: (MVector v a) => GrowableVector v s a -> (a -> a) -> Int -> ST s () #-}
+{-# specialise modify :: (MVector v a) => GrowableVector v RealWorld a -> (a -> a) -> Int -> IO () #-}
 
 swap :: (MVector v a, PrimMonad m)
   => GrowableVector v (PrimState m) a
   -> Int
   -> Int
   -> m ()
-swap g x y = readMutVar (vectorVar g) >>= \v -> Vector.swap v x y
+swap g x y = internalVector g >>= \v -> Vector.swap v x y
+{-# inline swap #-}
+{-# specialise swap :: (MVector v a) => GrowableVector v s a -> Int -> Int -> ST s () #-}
+{-# specialise swap :: (MVector v a) => GrowableVector v RealWorld a -> Int -> Int -> IO () #-}
+-}
