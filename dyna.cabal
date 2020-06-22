@@ -22,9 +22,11 @@ extra-source-files:
 library
   exposed-modules:
     Dyna
+    Dyna.Compact
   build-depends:
     , base
     , primitive
+    , primitive-addr
   hs-source-dirs:
     src
   default-language:

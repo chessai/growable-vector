@@ -1,7 +1,6 @@
 {-# language BangPatterns #-}
 {-# language CPP #-}
 {-# language FlexibleInstances #-}
-{-# language FunctionalDependencies #-}
 {-# language MagicHash #-}
 {-# language MultiParamTypeClasses #-}
 {-# language NamedFieldPuns #-}
@@ -72,59 +71,18 @@ import Control.Monad
 import Control.Monad.Primitive
 import Data.Foldable (traverse_)
 import Data.Primitive
+#if MIN_VERSION_primitive(0,7,0)
+import Data.Primitive.Addr
+#endif
 import GHC.Exts
+import GHC.Stable (StablePtr(..), freeStablePtr)
 import Prelude hiding (length, read)
 import qualified Data.Foldable as Foldable
 
-import Control.Monad.ST (ST)
-
--- $setup
---
--- >>> import Control.Monad
--- >>> assertEq :: Eq a => a -> a -> IO (); assertEq = when (x /= y) (fail "assertEq failed")
--- >>> assertEqM :: Eq a => m a -> a -> IO (); assertEqM mx y = mx >>= \x -> assertEq x y
---
---   You can explicitly create a @'Vec' s a@ with 'new':
---
---   @
---   v <- new
---   @
---
---   ...or by using 'fromFoldable':
---
---   @
---   v <- fromFoldable [1, 2]
---   @
---
---   You can 'push' values onto the end of a vector (which will grow the vector as needed):
---
---   @
---   v <- fromFoldable [1, 2]
---   push v 3
---   @
---
---   Popping values works in much the same way:
---
---   @
---   v <- fromFoldable [1, 2]
---   two <- pop v
---   @
---
---   Example:
---
---   >>> vec <- Vec.new
---   >>> push vec 1
---   >>> push vec 2
---
---   >>> assertEqM (length vec) 2
---   >>> assertEqM (read vec 0) 1
---
---   >>> assertEqM (pop vec) (Just 2)
---   >>> assertEqM (length vec) 1
-
-class (PrimMonad m, s ~ PrimState m) => MonadPrim s m | m -> s
-instance MonadPrim RealWorld IO
-instance MonadPrim s (ST s)
+#if !MIN_VERSION_primitive(0,8,0)
+class (PrimMonad m, s ~ PrimState m) => MonadPrim s m
+instance (PrimMonad m, s ~ PrimState m) => MonadPrim s m
+#endif
 
 -- |
 --   = Indexing
@@ -364,24 +322,4 @@ internal_itraverse_ f as = internal_ifoldr k (pure ()) as
   where
     k i a r = f i a *> r
 
-{-
-modify :: (MVector v a, PrimMonad m)
-  => GrowableVector v (PrimState m) a
-  -> (a -> a)
-  -> Int
-  -> m ()
-modify g f ix = internalVector g >>= \v -> Vector.modify v f ix
-{-# inline modify #-}
-{-# specialise modify :: (MVector v a) => GrowableVector v s a -> (a -> a) -> Int -> ST s () #-}
-{-# specialise modify :: (MVector v a) => GrowableVector v RealWorld a -> (a -> a) -> Int -> IO () #-}
 
-swap :: (MVector v a, PrimMonad m)
-  => GrowableVector v (PrimState m) a
-  -> Int
-  -> Int
-  -> m ()
-swap g x y = internalVector g >>= \v -> Vector.swap v x y
-{-# inline swap #-}
-{-# specialise swap :: (MVector v a) => GrowableVector v s a -> Int -> Int -> ST s () #-}
-{-# specialise swap :: (MVector v a) => GrowableVector v RealWorld a -> Int -> Int -> IO () #-}
--}
