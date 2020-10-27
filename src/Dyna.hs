@@ -14,6 +14,7 @@
 -- todo: add more doctests
 -- todo: add hedgehog tests
 -- todo: more correctness
+-- todo: generalise to lifted etc.
 
 -- |
 --   = Purpose
@@ -65,24 +66,18 @@ module Dyna
   , pop
   , extend
   , fromFoldable
+
+  -- , dump
   ) where
 
 import Control.Monad
 import Control.Monad.Primitive
 import Data.Foldable (traverse_)
 import Data.Primitive
-#if MIN_VERSION_primitive(0,7,0)
-import Data.Primitive.Addr
-#endif
 import GHC.Exts
-import GHC.Stable (StablePtr(..), freeStablePtr)
+import GHC.Float (double2Int, int2Double)
 import Prelude hiding (length, read)
 import qualified Data.Foldable as Foldable
-
-#if !MIN_VERSION_primitive(0,8,0)
-class (PrimMonad m, s ~ PrimState m) => MonadPrim s m
-instance (PrimMonad m, s ~ PrimState m) => MonadPrim s m
-#endif
 
 -- |
 --   = Indexing
@@ -138,30 +133,73 @@ data Vec s a = Vec
   , buf :: {-# unpack #-} !(MutVar s (MutablePrimArray s a))
   }
 
+-- | Constructs a new, empty @'Vec' s a'@.
+--
+-- @
+-- >>> vec <- new @_ @_ @Int
+-- >>> Vec.length vec
+-- 0
+-- >>> Vec.capacity vec
+-- 0
+-- @
 new :: forall m s a. (MonadPrim s m, Prim a)
   => m (Vec s a)
 new = withCapacity 0
 
+-- | Constructs a new, empty @'Vec' s a'@.
+--
+--   The vector will be able to hold exactly @capacity@
+--   elements without reallocating. It is important to
+--   note that althrough the returned vector has the
+--   /capacity/ specified, with vector will have a zero
+--   /length/. For an explanation of the difference between
+--   length and capacity, see (TODO FILL THIS IN).
+--
+-- @
+-- >>> vec <- Vec.withCapacity 10
+--
+-- -- The vector contains no items, even though it has
+-- -- capacity for more
+-- >>> assertM (== 0) $ Vec.length vec
+-- >>> assertM (== 10) $ Vec.capacity vec
+--
+-- -- These are all done without reallocating...
+-- >>> forM_ [1..10] $ \i -> Vec.push vec i
+-- >>> assertM (== 10) $ Vec.length vec
+-- >>> assertM (== 10) $ Vec.capacity vec
+--
+-- -- ..but this may make the vector reallocate
+-- >>> Vec.push vec 11
+--
+-- >>> assertM (== 11) $ Vec.length vec
+-- >>> assertM (>= 11) $ Vec.capacity vec
+-- @
 withCapacity :: forall m s a. (MonadPrim s m, Prim a)
-  => Int
+  => Int -- ^ capacity
   -> m (Vec s a)
 withCapacity sz = Vec
   <$> newMutVar 0
   <*> (newMutVar =<< newPrimArray sz)
 
+-- | Returns the number of elements in the vector.
 length :: forall m s a. (MonadPrim s m, Prim a)
   => Vec s a
   -> m Int
 length = readMutVar . len
 
+-- | Returns the maximum number of elements the vector
+--   can hold without reallocating.
 capacity :: forall m s a. (MonadPrim s m, Prim a)
   => Vec s a
   -> m Int
 capacity vec = do
-  maxCap <- internalMaxCapacity vec
-  takenUp <- length vec
-  pure (maxCap - takenUp)
+  internalMaxCapacity vec
 
+-- | Reserves the minimum capacity for exactly @additional@
+--   more elements to be inserted in the given @'Vec' s a@.
+--   After calling 'reserveExact', capacity will be greater
+--   than or equal to @length + additional@. Does nothing if
+--   the capacity is already sufficient.
 reserveExact :: forall m s a. (MonadPrim s m, Prim a)
   => Vec s a
   -> Int
@@ -180,6 +218,18 @@ reserveExact vec additional = do
 
     writeMutVar (buf vec) newBuf
 
+-- | Reserves capacity for at least @additional@ more elements
+--   to be inserted in the given @'Vec' s a@. The collection
+--   may reserve more space to avoid frequent reallocations.
+--   After calling 'reserve', capacity will be greater than or
+--   equal to @length + additional@. Does nothing if capacity
+--   is already sufficient.
+--
+-- @
+-- >>> vec <- Vec.fromFoldable [1]
+-- >>> Vec.reserve vec 10
+-- >>> assertM (>= 11) $ Vec.capacity vec
+-- @
 reserve :: forall m s a. (MonadPrim s m, Prim a)
   => Vec s a
   -> Int
@@ -191,7 +241,7 @@ reserve vec additional = do
     oldSize <- getSizeofMutablePrimArray oldBuf
 
     usedCap <- length vec
-    let newSize = 2 * (usedCap + additional) + oldSize
+    let newSize = internalScale (usedCap + additional) + oldSize
 
     newBuf <- newPrimArray newSize
     copyMutablePrimArray newBuf 0 oldBuf 0 usedCap
@@ -281,6 +331,8 @@ extend :: forall m s a t. (MonadPrim s m, Prim a, Foldable t)
   -> t a
   -> m ()
 extend vec xs = do
+  -- TODO: inline some of this stuff
+  -- to reduce redundant reads/writes
   reserve vec (Foldable.length xs)
   traverse_ (push vec) xs
 
@@ -322,4 +374,21 @@ internal_itraverse_ f as = internal_ifoldr k (pure ()) as
   where
     k i a r = f i a *> r
 
+_GROWTH_FACTOR :: Double
+_GROWTH_FACTOR = 1.5
+{-# inline _GROWTH_FACTOR #-}
 
+internalScale :: Int -> Int
+internalScale x = double2Int (_GROWTH_FACTOR * int2Double x)
+{-# inline internalScale #-}
+
+dump :: (Show a, Prim a) => Vec RealWorld a -> IO ()
+dump vec = do
+  buf <- internalVector vec
+  len <- length vec
+  arr <- freezePrimArray buf 0 len
+  cap <- internalMaxCapacity vec
+  print arr
+  print cap
+  shrinkToFit vec
+  print =<< internalMaxCapacity vec
