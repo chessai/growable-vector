@@ -1,7 +1,11 @@
-import Test.DocTest
+module Main (main) where
+
+import Test.DocTest (mainFromCabalWithConfig)
+import Test.DocTest.Internal.Options (Config(..), defaultConfig)
+import System.Environment (getArgs)
 
 main :: IO ()
-main = doctest
-  [ "src/Dyna.hs"
-  , "-XCPP"
-  ]
+main = do
+  mainFromCabalWithConfig "dyna" $ defaultConfig
+    { cfgThreads = Just 1
+    }

@@ -2,28 +2,27 @@
 
 module Main (main) where
 
-import Dyna (Vec)
-import qualified Dyna as Vec
+import Data.Primitive.Contiguous (Array)
+import Dyna.General
 import Control.Monad
-import System.Exit
-import qualified Dyna.Compact as C
+import Prelude hiding (length)
+
+assertM :: (Show a) => (a -> Bool) -> IO a -> IO ()
+assertM p ma = do
+  a <- ma
+  when (not (p a)) $ do
+    error ("error: " ++ show a)
 
 main :: IO ()
 main = do
-  c <- C.new
-  let n :: [Int]
-      n = [0..99]
-  forM_ n $ \i -> C.write c i i
-  forM_ n $ \i -> do
-    k <- C.read c i
-    print k
+  vec <- withCapacity @_ @Array @_ @Int 10
+  assertM (== 0) $ length vec
+  assertM (== 10) $ capacity vec
 
+  forM_ [1..10] $ \i -> push vec i
+  assertM (== 10) (length vec)
+  assertM (== 10) (capacity vec)
 
-
-{-
-  v <- Vec.fromFoldable @_ @_ @Int [0, 2, 4, 6]
-  two <- Vec.read v 1
-  Vec.write v 1 7
-  seven <- Vec.read v 1
-  when (two + seven /= 9) exitFailure
--}
+  push vec 11
+  assertM (== 11) (length vec)
+  assertM (>= 11) (capacity vec)
