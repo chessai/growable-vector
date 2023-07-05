@@ -26,3 +26,5 @@ main = do
   push vec 11
   assertM (== 11) (length vec)
   assertM (>= 11) (capacity vec)
+
+  assertM (== [1..11]) (toList vec)

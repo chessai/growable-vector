@@ -10,11 +10,14 @@
   , PolyKinds
   , RecordWildCards
   , ScopedTypeVariables
+  , TypeApplications
   , TypeFamilies
   , TypeOperators
   , UnboxedSums
   , UnboxedTuples
 #-}
+
+{-# language ViewPatterns #-}
 
 -- todo: add more doctests
 -- todo: add hedgehog tests
@@ -85,13 +88,12 @@ import Data.Primitive.Contiguous (Contiguous, Element, Mutable)
 import Data.Primitive.Contiguous qualified as C
 import GHC.Float (int2Double)
 import Prelude hiding (length, read)
-import qualified Data.Foldable as Foldable
 
 -- $setup
 -- >>> import Control.Monad (when, forM_)
 -- >>> import Data.Primitive.Contiguous (Array, SmallArray, PrimArray)
 -- >>> :m -Prelude
--- >>> import Prelude (IO, Bool, Show, show, (++), not, ($), error, Int, Word, (==), (>=))
+-- >>> import Prelude (IO, Bool, Show, show, (++), not, ($), error, Int, Word, (==), (>=), Maybe(..), Char)
 -- >>> :{
 -- assertM :: (a -> Bool) -> IO a -> IO ()
 -- assertM p ma = do
@@ -214,7 +216,7 @@ capacity :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
   => Vec arr s a
   -> m Word
 capacity vec = do
-  internalMaxCapacity vec
+  internal_max_capacity vec
 
 -- | Reserves the minimum capacity for exactly @additional@
 --   more elements to be inserted in the given @'Vec' s a@.
@@ -235,7 +237,7 @@ reserveExact :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
 reserveExact vec additional = do
   cap <- capacity vec
   when (additional > cap) $ do
-    oldBuf <- internalVector vec
+    oldBuf <- internal_vector vec
     oldSize <- cSizeMut oldBuf
 
     usedCap <- length vec
@@ -265,7 +267,7 @@ reserve vec additional = do
                <$> length vec
                <*> capacity vec
   when needsMore $ do
-    oldBuf <- internalVector vec
+    oldBuf <- internal_vector vec
     oldSize <- cSizeMut oldBuf
 
     usedCap <- length vec
@@ -293,7 +295,7 @@ shrinkToFit vec = do
                 <*> capacity vec
   when shrinkable $ do
     usedCap <- length vec
-    oldBuf <- internalVector vec
+    oldBuf <- internal_vector vec
     newBuf <- cNew usedCap
     internalCopyOverN newBuf usedCap oldBuf
     writeMutVar (buf vec) newBuf
@@ -320,37 +322,84 @@ shrinkTo vec minCap = do
   cap <- capacity vec
   when (cap > minCap) $ do
     let newLen = max cap minCap
-    oldBuf <- internalVector vec
+    oldBuf <- internal_vector vec
     newBuf <- cNew newLen
     internalCopyOverN newBuf newLen oldBuf
     writeMutVar (buf vec) newBuf
 
-read :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
+-- | Return the element at the given position.
+--
+--   If the element index is out of bounds, this function will segfault.
+--
+--   The bounds are defined as [0, length).
+--
+--   This function is intended to be used in situations where you have
+--   manually proved that your indices are within bounds, and you don't want to
+--   repeatedly pay for bounds checking.
+--
+--   Consider using 'read' instead.
+unsafeRead :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
   => Vec arr s a
   -> Word
   -> m a
-read vec n = do
+unsafeRead vec n = do
   v <- readMutVar (buf vec)
   cRead v n
 
-get :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
+-- | Return the element at the given position, or 'Nothing' if the index is out
+--   of bounds.
+--
+--   The bounds are defined as [0, length).
+read :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
   => Vec arr s a
   -> Word
   -> m (Maybe a)
-get vec n = do
+read vec n = do
   len <- length vec
   if (n >= 0 && n < len)
-    then Just <$> read vec n
+    then Just <$> unsafeRead vec n
     else pure Nothing
 
-write :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
+-- | Write a value to the vector at the given position.
+--
+--   If the index is out of bounds, this function will segfault.
+--
+--   The bounds are defined as [0, length).
+--   If you want to add an element past @length - 1@, use `push` or `extend`, which can
+--   intelligently handle resizes.
+--
+--   This function is intended to be used in situations where you have
+--   manually proved that your indices are within bounds, and you don't want to
+--   repeatedly pay for bounds checking.
+--
+--   Consider using 'write' instead.
+unsafeWrite :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
   => Vec arr s a
   -> Word
   -> a
   -> m ()
-write vec n x = do
+unsafeWrite vec n x = do
   v <- readMutVar (buf vec)
   cWrite v n x
+
+-- | Write a value to the vector at the given position.
+--
+--   If the index is in bounds, this returns @'Just' ()@.
+--   If the index is out of bounds, this returns 'Nothing'.
+--
+--   The bounds are defined as [0, length).
+--   If you want to add an element past @length - 1@, use `push` or `extend`, which can
+--   intelligently handle resizes.
+write :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
+  => Vec arr s a
+  -> Word
+  -> a
+  -> m (Maybe ())
+write vec n x = do
+  len <- length vec
+  if (n >= 0 && n < len)
+    then Just <$> unsafeWrite vec n x
+    else pure Nothing
 
 -- | Appends an element to the vector.
 --
@@ -367,10 +416,16 @@ push vec x = do
   reserve vec 1
 
   index <- length vec
-  internalWrite vec index x
+  internal_write vec index x
 
   modifyMutVar' (len vec) (+ 1)
 
+-- | Removes the last element from a vector and returns it, or 'Nothing' if it
+--   is empty.
+--
+-- >>> vec <- fromFoldable @_ @Array @_ @Int [1, 2, 3]
+-- >>> assertM (== Just 3) (pop vec)
+-- >>> assertM (== [1, 2]) (toList vec)
 pop :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
   => Vec arr s a
   -> m (Maybe a)
@@ -380,8 +435,13 @@ pop vec = do
     then pure Nothing
     else do
       modifyMutVar' (len vec) (subtract 1)
-      Just <$> read vec (lastIndex - 1)
+      Just <$> unsafeRead vec (lastIndex - 1)
 
+-- | Extend the vector with the elements of some 'Foldable' structure.
+--
+-- >>> vec <- fromFoldable @_ @Array @_ @Char ['a', 'b', 'c']
+-- >>> extend vec ['d', 'e', 'f']
+-- >>> assertM (== "abcdef") (toList vec)
 extend :: forall m arr s a t. (MonadPrim s m, Contiguous arr, Element arr a, Foldable t)
   => Vec arr s a
   -> t a
@@ -389,67 +449,65 @@ extend :: forall m arr s a t. (MonadPrim s m, Contiguous arr, Element arr a, Fol
 extend vec xs = do
   -- TODO: inline some of this stuff
   -- to reduce redundant reads/writes
-  reserve vec (foldableLength xs)
   traverse_ (push vec) xs
 
+-- | Create a vector with the elements of some 'Foldable' structure.
+--
+-- >>> vec <- fromFoldable @_ @Array @_ @Int [1..10]
+-- >>> assertM (== [1..10]) (toList vec)
 fromFoldable :: forall m arr s a t. (MonadPrim s m, Contiguous arr, Element arr a, Foldable t)
   => t a
   -> m (Vec arr s a)
 fromFoldable xs = do
-  vec <- withCapacity (foldableLength xs)
-  internal_itraverse_ (\i x -> write vec i x) xs
+  vec <- new
+  extend vec xs
   pure vec
 
+-- | Create a list with the elements of the vector.
+--
+-- >>> vec <- new @_ @PrimArray @_ @Int
+-- >>> extend vec [1..5]
+-- >>> toList vec
+-- [1,2,3,4,5]
 toList :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
   => Vec arr s a
   -> m [a]
 toList vec = do
+  buf <- internal_vector vec
   sz <- length vec
-  let go !ix !acc = if ix >= 0
+  arr <- C.freeze @arr @m @a (C.sliceMut buf 0 (uw2i sz))
+  pure (C.toList arr)
+
+{-
+  TODO: switch to this
+  let go !ix !acc =
+        if ix >= 0
         then do
-          x <- read vec ix
+          x <- cRead buf ix
           go (ix - 1) (x : acc)
         else pure acc
   go (sz - 1) []
+-}
 
 --------- INTERNALS -------------
 
-internalVector :: (MonadPrim s m, Contiguous arr, Element arr a)
+internal_vector :: (MonadPrim s m, Contiguous arr, Element arr a)
   => Vec arr s a
   -> m (Mutable arr s a)
-internalVector = readMutVar . buf
+internal_vector = readMutVar . buf
 
-internalWrite :: (MonadPrim s m, Contiguous arr, Element arr a)
+internal_write :: (MonadPrim s m, Contiguous arr, Element arr a)
   => Vec arr s a
   -> Word
   -> a
   -> m ()
-internalWrite vec i x = internalVector vec >>= \v -> cWrite v i x
+internal_write vec i x = internal_vector vec >>= \v -> cWrite v i x
 
-internalMaxCapacity :: (MonadPrim s m, Contiguous arr, Element arr a)
+internal_max_capacity :: (MonadPrim s m, Contiguous arr, Element arr a)
   => Vec arr s a
   -> m Word
-internalMaxCapacity vec = do
+internal_max_capacity vec = do
   cSizeMut =<< readMutVar (buf vec)
-
-internal_ifoldr :: Foldable t
-  => (Word -> a -> b -> b)
-  -> b
-  -> t a
-  -> b
-internal_ifoldr f z xs = Foldable.foldr
-  (\x g i -> f i x (g (i + 1)))
-  (const z)
-  xs
-  0
-
-internal_itraverse_ :: (Applicative m, Foldable t)
-  => (Word -> a -> m b)
-  -> t a
-  -> m ()
-internal_itraverse_ f as = internal_ifoldr k (pure ()) as
-  where
-    k i a r = f i a *> r
 
 ui2w :: Int -> Word
 ui2w = fromIntegral
@@ -471,9 +529,6 @@ cWrite m w a = C.write m (uw2i w) a
 
 cSizeMut :: (Contiguous arr, Element arr a, MonadPrim s m) => Mutable arr s a -> m Word
 cSizeMut m = ui2w <$> C.sizeMut m
-
-foldableLength :: (Foldable t) => t a -> Word
-foldableLength x = ui2w (Foldable.length x)
 
 internalCopyOverN :: (Contiguous arr, Element arr a, MonadPrim s m) => Mutable arr s a -> Word -> Mutable arr s a -> m ()
 internalCopyOverN destination sourceLen source = do
