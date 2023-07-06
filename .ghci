@@ -1,5 +1,0 @@
-:set -XTypeApplications
-
-import Control.Monad
-
-:set prompt "> "

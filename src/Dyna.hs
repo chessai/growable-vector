@@ -17,11 +17,7 @@
   , UnboxedTuples
 #-}
 
-{-# language ViewPatterns #-}
-
--- todo: add more doctests
 -- todo: add hedgehog tests
--- todo: more correctness
 -- todo: generalise to lifted etc.
 
 -- |
@@ -53,7 +49,7 @@
 --   As another example, 'push', which does not take an index, takes the vector, then the element.
 --
 --   Any function which accepts more than one of the types in the list, or accepts a type which is not in the list, has no guarantee about its argument order.
-module Dyna.General
+module Dyna
   ( Vec
 
   , new
@@ -68,8 +64,9 @@ module Dyna.General
   , shrinkToFit
   , shrinkTo
 
+  , unsafeRead
   , read
-  , get
+  , unsafeWrite
   , write
   , push
   , pop
@@ -93,7 +90,7 @@ import Prelude hiding (length, read)
 -- >>> import Control.Monad (when, forM_)
 -- >>> import Data.Primitive.Contiguous (Array, SmallArray, PrimArray)
 -- >>> :m -Prelude
--- >>> import Prelude (IO, Bool, Show, show, (++), not, ($), error, Int, Word, (==), (>=), Maybe(..), Char)
+-- >>> import Prelude (IO, Bool, Show, show, (++), not, ($), error, Int, Word, (==), (>=), Maybe(..), Char, (+))
 -- >>> :{
 -- assertM :: (a -> Bool) -> IO a -> IO ()
 -- assertM p ma = do
@@ -106,28 +103,27 @@ import Prelude hiding (length, read)
 --   = Indexing
 --   The 'Vec' type allows access to values by (0-based) index. An example will be more explicit:
 --
---   @
---   v <- fromFoldable [0, 2, 4, 6]
---   two <- read v 1
---   write v 1 7
---   seven <- read v 1
---   two + seven -- will print out '9'
---   @
+--   >>> vec <- fromFoldable @_ @Array @_ @Int [0, 2, 4, 6]
+--   >>> two <- unsafeRead vec 1
+--   >>> unsafeWrite vec 1 7
+--   >>> seven <- unsafeRead vec 1
+--   >>> two + seven
+--   9
 --
 --   However, be careful: if you try to access an index which isn't in the 'Vec', your program will exhibit undefined behaviour (\"UB\"), either returning garbage or segfaulting. You cannot do this:
 --
 --   @
 --   v <- fromFoldable [0, 2, 4, 6]
---   read v 6 -- this is UB
+--   unsafeRead v 6 -- this is UB
 --   @
 --
---   If you want safe access, use 'get':
+--   If you want safe access, use 'read':
 --
---   @
---   v <- fromFoldable [0, 2, 4, 6]
---   get v 1 -- 'Just' 2
---   get v 6 -- 'Nothing'
---   @
+--   >>> vec <- fromFoldable @_ @Array @_ @Int [0, 2, 4, 6]
+--   >>> read vec 1
+--   Just 2
+--   >>> read vec 6
+--   Nothing
 --
 --   = Capacity and reallocation
 --   The capacity of a vector is the amount of space allocated for any future elements that will be added onto the vector. This is not to be confused with the /length/ of a vector, which specifies the number of actual elements within the vector. If a vector's length exceeds its capacity, its capacity will automatically be increased, but its elements will have to be reallocated.
@@ -138,7 +134,7 @@ import Prelude hiding (length, read)
 --   'Vec' is a (pointer, capacity, length) triplet. The pointer
 --   will never be null.
 --
---   Because of the semantics of the GHC runtime, creating a new vector will always allocate. In particular, if you construct a 'Vec' with capacity 0 via @'new' 0@, @'fromFoldable' []@, or @'shrinkToFit'@ on an empty 'Vec', the 16-byte header to GHC 'ByteArray#' will be allocated, but nothing else (for the curious: this is needed from 'sameMutableByteArray#' to work). Similarly, if you store zero-sized types inside a 'Vec', it will not allocate space for them. /Note that in this case the 'Vec' may not report a 'capacity' of 0/. 'Vec' will allocate if and only if @'sizeOf (undefined :: a) '*' 'capacity' '>' 0@.
+--   Because of the semantics of the GHC runtime, creating a new vector will always allocate. In particular, if you construct a 'Vec' with capacity 0 via @'new' 0@, @'fromFoldable' []@, or @'shrinkToFit'@ on an empty 'Vec', the 16-byte header to GHC 'ByteArray#' will be allocated, but nothing else (for the curious: this is needed for 'sameMutableByteArray#' to work). Similarly, if you store zero-sized types inside a 'Vec', it will not allocate space for them. /Note that in this case the 'Vec' may not report a 'capacity' of 0/. 'Vec' will allocate if and only if @'sizeOf (undefined :: a) '*' 'capacity' '>' 0@.
 --
 --   If a 'Vec' /has/ allocated memory, then the memory it points to is on the heap (as defined by GHC's allocator), and its pointer points to 'length' initialised, contiguous elements in order (i.e. what you would see if you turned it into a list), followed by @'maxCapacity' '-' 'length'@ logically uninitialised, contiguous elements.
 --
@@ -228,6 +224,7 @@ capacity vec = do
 --   if future insertions are expected.
 --
 -- >>> vec <- fromFoldable @_ @Array @_ @Int @_ [1]
+-- >>> assertM (== 1) (capacity vec)
 -- >>> reserveExact vec 10
 -- >>> assertM (>= 11) (capacity vec)
 reserveExact :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
