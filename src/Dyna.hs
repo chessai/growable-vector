@@ -72,9 +72,12 @@ module Dyna
   , pop
   , extend
   , fromFoldable
-  , toList
 
-  -- , dump
+  , toList
+  , toPrimitiveVector, toPrimitiveVectorWith
+  , toLiftedVector, toLiftedVectorWith
+
+  , map, map', imap, imap'
   ) where
 
 import Control.Monad
@@ -84,13 +87,15 @@ import Data.Primitive
 import Data.Primitive.Contiguous (Contiguous, Element, Mutable)
 import Data.Primitive.Contiguous qualified as C
 import GHC.Float (int2Double)
-import Prelude hiding (length, read)
+import Prelude hiding (length, read, map)
+import Data.Vector qualified as LiftedVector
+import Data.Vector.Primitive qualified as PrimitiveVector
 
 -- $setup
 -- >>> import Control.Monad (when, forM_)
 -- >>> import Data.Primitive.Contiguous (Array, SmallArray, PrimArray)
 -- >>> :m -Prelude
--- >>> import Prelude (IO, Bool, Show, show, (++), not, ($), error, Int, Word, (==), (>=), Maybe(..), Char, (+))
+-- >>> import Prelude (IO, Bool, Show, show, (++), not, ($), error, Int, Word, (==), (>=), Maybe(..), Char, (+), map)
 -- >>> :{
 -- assertM :: (a -> Bool) -> IO a -> IO ()
 -- assertM p ma = do
@@ -474,17 +479,116 @@ toList vec = do
   sz <- length vec
   arr <- C.freeze @arr @m @a (C.sliceMut buf 0 (uw2i sz))
   pure (C.toList arr)
+  {-
+    TODO: switch to this
+    let go !ix !acc =
+          if ix >= 0
+          then do
+            x <- cRead buf ix
+            go (ix - 1) (x : acc)
+          else pure acc
+    go (sz - 1) []
+  -}
 
-{-
-  TODO: switch to this
-  let go !ix !acc =
-        if ix >= 0
-        then do
-          x <- cRead buf ix
-          go (ix - 1) (x : acc)
-        else pure acc
-  go (sz - 1) []
--}
+toPrimitiveVector :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a, Prim a)
+  => Vec arr s a
+  -> m (PrimitiveVector.Vector a)
+toPrimitiveVector vec = do
+  toPrimitiveVectorWith (\_ a -> pure a) vec
+
+toLiftedVector :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
+  => Vec arr s a
+  -> m (LiftedVector.Vector a)
+toLiftedVector vec = do
+  toLiftedVectorWith (\_ a -> pure a) vec
+
+toPrimitiveVectorWith :: forall m arr s a b. (MonadPrim s m, Contiguous arr, Element arr a, Prim a, Prim b)
+  => (Word -> a -> m b)
+  -> Vec arr s a
+  -> m (PrimitiveVector.Vector b)
+toPrimitiveVectorWith f vec = do
+  buf <- internal_vector vec
+  len <- length vec
+  PrimitiveVector.generateM (uw2i len) $ \ix -> do
+    let wix = ui2w ix
+    x <- cRead buf wix
+    f wix x
+
+toLiftedVectorWith :: forall m arr s a b. (MonadPrim s m, Contiguous arr, Element arr a)
+  => (Word -> a -> m b)
+  -> Vec arr s a
+  -> m (LiftedVector.Vector b)
+toLiftedVectorWith f vec = do
+  buf <- internal_vector vec
+  len <- length vec
+  LiftedVector.generateM (uw2i len) $ \ix -> do
+    let wix = ui2w ix
+    x <- cRead buf wix
+    f wix x
+
+-- | Map over an array, modifying the elements in place.
+--
+-- >>> vec <- fromFoldable @_ @Array @_ @Int [1..10]
+-- >>> map (* 2) vec
+-- >>> assertM (== [2, 4, 6, 8, 10]) (toList vec)
+map :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
+  => (a -> a)
+  -> Vec arr s a
+  -> m ()
+map f vec = do
+  buf <- internal_vector vec
+  len <- length vec
+  let go !ix = when (ix < len) $ do
+        a <- cRead buf ix
+        cWrite buf ix (f a)
+        go (ix + 1)
+  go 0
+
+-- | Map strictly over an array, modifying the elements in place.
+--
+-- >>> vec <- fromFoldable @_ @Array @_ @Int [1..10]
+-- >>> map (* 2) vec
+-- >>> assertM (== [2, 4, 6, 8, 10]) (toList vec)
+map' :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
+  => (a -> a)
+  -> Vec arr s a
+  -> m ()
+map' f vec = do
+  buf <- internal_vector vec
+  len <- length vec
+  let go !ix = when (ix < len) $ do
+        a <- cRead buf ix
+        let !a' = f a
+        cWrite buf ix a'
+        go (ix + 1)
+  go 0
+
+imap :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
+  => (Word -> a -> a)
+  -> Vec arr s a
+  -> m ()
+imap f vec = do
+  buf <- internal_vector vec
+  len <- length vec
+  let go !ix = when (ix < len) $ do
+        a <- cRead buf ix
+        cWrite buf ix (f ix a)
+        go (ix + 1)
+  go 0
+
+imap' :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
+  => (Word -> a -> a)
+  -> Vec arr s a
+  -> m ()
+imap' f vec = do
+  buf <- internal_vector vec
+  len <- length vec
+  let go !ix = when (ix < len) $ do
+        a <- cRead buf ix
+        let !a' = f ix a
+        cWrite buf ix a'
+        go (ix + 1)
+  go 0
 
 --------- INTERNALS -------------
 
