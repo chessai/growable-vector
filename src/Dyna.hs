@@ -95,7 +95,7 @@ import Data.Vector.Primitive qualified as PrimitiveVector
 -- >>> import Control.Monad (when, forM_)
 -- >>> import Data.Primitive.Contiguous (Array, SmallArray, PrimArray)
 -- >>> :m -Prelude
--- >>> import Prelude (IO, Bool, Show, show, (++), not, ($), error, Int, Word, (==), (>=), Maybe(..), Char, (+), map)
+-- >>> import Prelude (IO, Bool, Show, show, (++), not, ($), error, Int, Word, (==), (>=), Maybe(..), Char, (+))
 -- >>> :{
 -- assertM :: (a -> Bool) -> IO a -> IO ()
 -- assertM p ma = do
