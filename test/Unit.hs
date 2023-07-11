@@ -1,11 +1,13 @@
-{-# language TypeApplications #-}
+{-# language ImportQualifiedPost, TypeApplications #-}
 
 module Main (main) where
 
 import Data.Primitive.Contiguous (Array)
-import Dyna.General
+import Dyna
 import Control.Monad
 import Prelude hiding (length)
+import Data.Vector.Primitive qualified as PrimitiveVector
+import Data.Vector qualified as LiftedVector
 
 assertM :: (Show a) => (a -> Bool) -> IO a -> IO ()
 assertM p ma = do
@@ -28,3 +30,15 @@ main = do
   assertM (>= 11) (capacity vec)
 
   assertM (== [1..11]) (toList vec)
+
+  toVector
+
+toVector :: IO ()
+toVector = do
+  vec <- fromFoldable @_ @Array @_ @Int [1..1000]
+
+  primVec <- toPrimitiveVector vec
+  assertM (== [1..1000]) (pure (PrimitiveVector.toList primVec))
+
+  liftedVec <- toLiftedVector vec
+  assertM (== [1..1000]) (pure (LiftedVector.toList liftedVec))
