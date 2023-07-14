@@ -97,11 +97,11 @@ import Data.Vector.Primitive qualified as PrimitiveVector
 -- >>> :m -Prelude
 -- >>> import Prelude (IO, Bool, Show, show, (++), not, ($), error, Int, Word, (==), (>=), Maybe(..), Char, (+), (*))
 -- >>> :{
--- assertM :: (a -> Bool) -> IO a -> IO ()
+-- assertM :: (Show a) => (a -> Bool) -> IO a -> IO ()
 -- assertM p ma = do
 --   a <- ma
 --   when (not (p a)) $ do
---     error "assertion failed"
+--     error ("assertion failed: value = " ++ show a)
 -- :}
 
 -- |
