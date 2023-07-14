@@ -160,10 +160,8 @@ data Vec arr s a = Vec
 -- | Constructs a new, empty @'Vec' s a'@.
 --
 -- >>> vec <- new @_ @Array @_ @Int
--- >>> length vec
--- 0
--- >>> capacity vec
--- 0
+-- >>> assertM (== 0) (length vec)
+-- >>> assertM (== 0) (capacity vec)
 new :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
   => m (Vec arr s a)
 new = withCapacity 0
@@ -229,7 +227,6 @@ capacity vec = do
 --   if future insertions are expected.
 --
 -- >>> vec <- fromFoldable @_ @Array @_ @Int @_ [1]
--- >>> assertM (== 1) (capacity vec)
 -- >>> reserveExact vec 10
 -- >>> assertM (>= 11) (capacity vec)
 reserveExact :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
@@ -529,8 +526,8 @@ toLiftedVectorWith f vec = do
 -- | Map over an array, modifying the elements in place.
 --
 -- >>> vec <- fromFoldable @_ @Array @_ @Int [1..10]
--- >>> map (* 2) vec
--- >>> assertM (== [2, 4, 6, 8, 10]) (toList vec)
+-- >>> map (+ 1) vec
+-- >>> assertM (== [2, 3 .. 11]) (toList vec)
 map :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
   => (a -> a)
   -> Vec arr s a
@@ -548,7 +545,7 @@ map f vec = do
 --
 -- >>> vec <- fromFoldable @_ @Array @_ @Int [1..10]
 -- >>> map (* 2) vec
--- >>> assertM (== [2, 4, 6, 8, 10]) (toList vec)
+-- >>> assertM (== [2, 4 .. 20]) (toList vec)
 map' :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
   => (a -> a)
   -> Vec arr s a
