@@ -320,7 +320,8 @@ shrinkTo :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
 shrinkTo vec minCap = do
   cap <- capacity vec
   when (cap > minCap) $ do
-    let newLen = max cap minCap
+    len <- length vec
+    let newLen = max len minCap
     oldBuf <- internal_vector vec
     newBuf <- cNew newLen
     internalCopyOverN newBuf newLen oldBuf
