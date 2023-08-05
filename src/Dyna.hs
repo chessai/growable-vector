@@ -203,7 +203,7 @@ withCapacity sz = Vec
 length :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
   => Vec arr s a
   -> m Word
-length = readMutVar . len
+length vec = readMutVar (len vec)
 
 -- | Returns the maximum number of elements the vector
 --   can hold without reallocating.
