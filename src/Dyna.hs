@@ -527,7 +527,7 @@ toLiftedVectorWith f vec = do
 --
 -- >>> vec <- fromFoldable @_ @Array @_ @Int [1..10]
 -- >>> map (+ 1) vec
--- >>> assertM (== [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]) (toList vec)
+-- >>> assertM (== [2, 3 .. 11]) (toList vec)
 map :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
   => (a -> a)
   -> Vec arr s a
@@ -545,7 +545,7 @@ map f vec = do
 --
 -- >>> vec <- fromFoldable @_ @Array @_ @Int [1..10]
 -- >>> map (* 2) vec
--- >>> assertM (== [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]) (toList vec)
+-- >>> assertM (== [2, 4 .. 20]) (toList vec)
 map' :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
   => (a -> a)
   -> Vec arr s a
