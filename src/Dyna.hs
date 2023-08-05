@@ -108,12 +108,12 @@ import Data.Vector.Primitive qualified as PrimitiveVector
 --   = Indexing
 --   The 'Vec' type allows access to values by (0-based) index. An example will be more explicit:
 --
--- >>> vec <- fromFoldable @_ @Array @_ @Int [0, 2, 4, 6]
--- >>> two <- unsafeRead vec 1
--- >>> unsafeWrite vec 1 7
--- >>> seven <- unsafeRead vec 1
--- >>> two + seven
--- 9
+--   >>> vec <- fromFoldable @_ @Array @_ @Int [0, 2, 4, 6]
+--   >>> two <- unsafeRead vec 1
+--   >>> unsafeWrite vec 1 7
+--   >>> seven <- unsafeRead vec 1
+--   >>> two + seven
+--   9
 --
 --   However, be careful: if you try to access an index which isn't in the 'Vec', your program will exhibit undefined behaviour (\"UB\"), either returning garbage or segfaulting. You cannot do this:
 --
@@ -124,10 +124,10 @@ import Data.Vector.Primitive qualified as PrimitiveVector
 --
 --   If you want safe access, use 'read':
 --
--- >>> vec <- fromFoldable @_ @Array @_ @Int [0, 2, 4, 6]
--- >>> read vec 1
--- Just 2
--- >>> read vec 6
+--   >>> vec <- fromFoldable @_ @Array @_ @Int [0, 2, 4, 6]
+--   >>> read vec 1
+--   Just 2
+--   >>> read vec 6
 --   Nothing
 --
 --   = Capacity and reallocation
