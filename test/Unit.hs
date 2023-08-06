@@ -105,12 +105,10 @@ t_shrinkTo = do
   assertM (== 10) (capacity vec)
 
   shrinkTo vec 4
-
-  assertM (>= 4) (capacity vec)
+  assertM (== 4) (capacity vec)
 
   shrinkTo vec 0
-  assertM (>= 3) (capacity vec)
-
+  assertM (== 3) (capacity vec)
 
 _toVector :: IO ()
 _toVector = do
