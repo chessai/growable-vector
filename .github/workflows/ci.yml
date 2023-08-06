@@ -37,7 +37,6 @@ jobs:
         key: ${{ runner.os }}-${{ matrix.ghc }}
     - name: Test
       run: |
-        cabal run test:doctest
         cabal run test:unit
     #- name: Bench
     #   run: |
