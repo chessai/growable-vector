@@ -3,8 +3,10 @@ name:
   dyna
 version:
   0.1
--- synopsis:
--- description:
+synopsis:
+  A contiguous growable array type.
+description:
+  A contiguous growable array type. See the haddocks for more details.
 -- bug-reports:
 license:
   MIT
@@ -15,8 +17,9 @@ author:
 maintainer:
   chessai <chessai1996@gmail.com>
 -- copyright:
--- category:
-extra-source-files:
+category:
+  Data
+extra-doc-files:
   CHANGELOG.md
 
 library
@@ -26,10 +29,10 @@ library
     --Dyna.Unboxed
     Dyna
   build-depends:
-    , base >= 4.14
-    , contiguous >= 0.6
-    , primitive >= 0.7.1
-    , vector >= 0.12
+    , base >= 4.14 && < 4.20
+    , contiguous >= 0.6 && < 0.7
+    , primitive >= 0.7.1 && < 0.10
+    , vector >= 0.12 && < 0.14
   hs-source-dirs:
     src
   default-language:
