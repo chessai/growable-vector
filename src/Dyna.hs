@@ -17,9 +17,6 @@
   , UnboxedTuples
 #-}
 
--- todo: add hedgehog tests
--- todo: generalise to lifted etc.
-
 -- |
 --   = Purpose
 --   A contiguous growable array type with heap-allocated contents, written @'Vec' s a@.
@@ -74,8 +71,9 @@ module Dyna
   , fromFoldable
 
   , toList
-  , toPrimitiveVector, toPrimitiveVectorWith
   , toLiftedVector, toLiftedVectorWith
+  , toPrimitiveVector, toPrimitiveVectorWith
+  , toStorableVector, toStorableVectorWith
 
   , map, map', imap, imap'
   ) where
@@ -87,9 +85,11 @@ import Data.Primitive
 import Data.Primitive.Contiguous (Contiguous, Element, Mutable)
 import Data.Primitive.Contiguous qualified as C
 import GHC.Float (int2Double)
+import Foreign.Storable (Storable)
 import Prelude hiding (length, read, map)
 import Data.Vector qualified as LiftedVector
 import Data.Vector.Primitive qualified as PrimitiveVector
+import Data.Vector.Storable qualified as StorableVector
 
 -- $setup
 -- >>> import Control.Monad (when, forM_)
@@ -139,7 +139,7 @@ import Data.Vector.Primitive qualified as PrimitiveVector
 --   'Vec' is a (pointer, capacity, length) triplet. The pointer
 --   will never be null.
 --
---   Because of the semantics of the GHC runtime, creating a new vector will always allocate. In particular, if you construct a 'Vec' with capacity 0 via @'new' 0@, @'fromFoldable' []@, or @'shrinkToFit'@ on an empty 'Vec', the 16-byte header to GHC 'ByteArray#' will be allocated, but nothing else (for the curious: this is needed for 'sameMutableByteArray#' to work). Similarly, if you store zero-sized types inside a 'Vec', it will not allocate space for them. /Note that in this case the 'Vec' may not report a 'capacity' of 0/. 'Vec' will allocate if and only if @'sizeOf (undefined :: a) '*' 'capacity' '>' 0@.
+--   Because of the semantics of the GHC runtime, creating a new vector will always allocate. In particular, if you construct a 'MutablePrimArray'-backed 'Vec' with capacity 0 via @'new' 0@, @'fromFoldable' []@, or @'shrinkToFit'@ on an empty 'Vec', the 16-byte header to GHC 'ByteArray#' will be allocated, but nothing else (for the curious: this is needed for 'sameMutableByteArray#' to work). Similarly, if you store zero-sized types inside such a 'Vec', it will not allocate space for them. /Note that in this case the 'Vec' may not report a 'capacity' of 0/. 'Vec' will allocate if and only if @'sizeOf (undefined :: a) '*' 'capacity' '>' 0@.
 --
 --   If a 'Vec' /has/ allocated memory, then the memory it points to is on the heap (as defined by GHC's allocator), and its pointer points to 'length' initialised, contiguous elements in order (i.e. what you would see if you turned it into a list), followed by @'maxCapacity' '-' 'length'@ logically uninitialised, contiguous elements.
 --
@@ -172,8 +172,7 @@ new = withCapacity 0
 --   elements without reallocating. It is important to
 --   note that althrough the returned vector has the
 --   /capacity/ specified, with vector will have a zero
---   /length/. For an explanation of the difference between
---   length and capacity, see (TODO FILL THIS IN).
+--   /length/.
 --
 -- >>> vec <- withCapacity @_ @SmallArray @_ @Int 10
 --
@@ -494,6 +493,12 @@ toPrimitiveVector :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element a
 toPrimitiveVector vec = do
   toPrimitiveVectorWith (\_ a -> pure a) vec
 
+toStorableVector :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a, Storable a)
+  => Vec arr s a
+  -> m (StorableVector.Vector a)
+toStorableVector vec = do
+  toStorableVectorWith (\_ a -> pure a) vec
+
 toLiftedVector :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
   => Vec arr s a
   -> m (LiftedVector.Vector a)
@@ -508,6 +513,18 @@ toPrimitiveVectorWith f vec = do
   buf <- internal_vector vec
   len <- length vec
   PrimitiveVector.generateM (uw2i len) $ \ix -> do
+    let wix = ui2w ix
+    x <- cRead buf wix
+    f wix x
+
+toStorableVectorWith :: forall m arr s a b. (MonadPrim s m, Contiguous arr, Element arr a, Storable b)
+  => (Word -> a -> m b)
+  -> Vec arr s a
+  -> m (StorableVector.Vector b)
+toStorableVectorWith f vec = do
+  buf <- internal_vector vec
+  len <- length vec
+  StorableVector.generateM (uw2i len) $ \ix -> do
     let wix = ui2w ix
     x <- cRead buf wix
     f wix x
