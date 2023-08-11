@@ -1,20 +1,9 @@
 {-# language
-    BangPatterns
-  , CPP
-  , FlexibleInstances
-  , ImportQualifiedPost
-  , MagicHash
-  , MultiParamTypeClasses
-  , NamedFieldPuns
+    ImportQualifiedPost
   , PackageImports
-  , PolyKinds
-  , RecordWildCards
   , ScopedTypeVariables
   , TypeApplications
   , TypeFamilies
-  , TypeOperators
-  , UnboxedSums
-  , UnboxedTuples
 #-}
 
 -- |
@@ -27,10 +16,9 @@
 --   The type variables in this module will be ordered according to the following precedence list (with higher precedence meaning left-most in the forall-quantified type variables):
 --
 --     1. The 'PrimMonad' type variable, @m@
---     2. The array type, @arr@
---     3. The 'PrimState' token, @s@
---     4. The element type, @a@
---     5. Everything else is unspecified (look at the forall)
+--     2. The 'PrimState' token, @s@
+--     3. The element type, @a@
+--     4. Everything else is unspecified (look at the forall)
 --
 --   This structuring is intended to document and ensure a uniform experience for users of @-XTypeApplications@.
 --
@@ -46,7 +34,7 @@
 --   As another example, 'push', which does not take an index, takes the vector, then the element.
 --
 --   Any function which accepts more than one of the types in the list, or accepts a type which is not in the list, has no guarantee about its argument order.
-module Dyna
+module Dyna.Unboxed
   ( Vec
 
   , new
@@ -78,37 +66,23 @@ module Dyna
   , map, map', imap, imap'
   ) where
 
+import Dyna qualified
+
 import Control.Monad
 import Control.Monad.Primitive
-import Data.Foldable (traverse_)
+import Data.Coerce (coerce)
 import Data.Primitive
-import Data.Primitive.Contiguous (Contiguous, Element, Mutable)
-import Data.Primitive.Contiguous qualified as C
-import GHC.Float (int2Double)
 import Foreign.Storable (Storable)
 import Prelude hiding (length, read, map)
 import Data.Vector qualified as LiftedVector
 import Data.Vector.Primitive qualified as PrimitiveVector
 import Data.Vector.Storable qualified as StorableVector
 
--- $setup
--- >>> import Control.Monad (when, forM_)
--- >>> import Data.Primitive.Contiguous (Array, SmallArray, PrimArray)
--- >>> :m -Prelude
--- >>> import Prelude (IO, Bool, Show, show, (++), not, ($), error, Int, Word, (==), (>=), Maybe(..), Char, (+), (*))
--- >>> :{
--- assertM :: (Show a) => (a -> Bool) -> IO a -> IO ()
--- assertM p ma = do
---   a <- ma
---   when (not (p a)) $ do
---     error ("assertion failed: value = " ++ show a)
--- :}
-
 -- |
 --   = Indexing
 --   The 'Vec' type allows access to values by (0-based) index. An example will be more explicit:
 --
---   >>> vec <- fromFoldable @_ @Array @_ @Int [0, 2, 4, 6]
+--   >>> vec <- fromFoldable @_ @_ @Int [0, 2, 4, 6]
 --   >>> two <- unsafeRead vec 1
 --   >>> unsafeWrite vec 1 7
 --   >>> seven <- unsafeRead vec 1
@@ -124,7 +98,7 @@ import Data.Vector.Storable qualified as StorableVector
 --
 --   If you want safe access, use 'read':
 --
---   >>> vec <- fromFoldable @_ @Array @_ @Int [0, 2, 4, 6]
+--   >>> vec <- fromFoldable @_ @_ @Int [0, 2, 4, 6]
 --   >>> read vec 1
 --   Just 2
 --   >>> read vec 6
@@ -152,19 +126,16 @@ import Data.Vector.Storable qualified as StorableVector
 --   'fromFoldable' and 'withCapacity' will produce a 'Vec' with exactly the requested capacity.
 --
 --   'Vec' will not specifically overwrite any data that is removed from it, but also won't specifically preserve it. Its uninitialised memory is scratch space that it may use however it wants. It will generally just do whatever is most efficient or otherwise easy to implement. Do not rely on removed data to be erased for security purposes. Even if a 'Vec' drops out of scope, its buffer may simply be reused by another 'Vec'. Even if you zero a 'Vec's memory first, this may not actually happen when you think it does because of Garbage Collection.
-data Vec arr s a = Vec
-  { len :: {-# unpack #-} !(MutVar s Word)
-  , buf :: {-# unpack #-} !(MutVar s (Mutable arr s a))
-  }
+newtype Vec s a = Vec (Dyna.Vec PrimArray s a)
 
 -- | \(O(1)\). Constructs a new, empty @'Vec' s a'@.
 --
--- >>> vec <- new @_ @Array @_ @Int
+-- >>> vec <- new @_ @_ @Int
 -- >>> assertM (== 0) (length vec)
 -- >>> assertM (== 0) (capacity vec)
-new :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
-  => m (Vec arr s a)
-new = withCapacity 0
+new :: forall m s a. (MonadPrim s m, Prim a)
+  => m (Vec s a)
+new = fmap coerce Dyna.new
 
 -- | \(O(1)\). Constructs a new, empty @'Vec' s a'@.
 --
@@ -174,7 +145,7 @@ new = withCapacity 0
 --   /capacity/ specified, with vector will have a zero
 --   /length/.
 --
--- >>> vec <- withCapacity @_ @SmallArray @_ @Int 10
+-- >>> vec <- withCapacity @_ @_ @Int 10
 --
 -- -- The vector contains no items, even though it has
 -- -- capacity for more
@@ -191,31 +162,28 @@ new = withCapacity 0
 --
 -- >>> assertM (== 11) (length vec)
 -- >>> assertM (>= 11) (capacity vec)
-withCapacity :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
+withCapacity :: forall m s a. (MonadPrim s m, Prim a)
   => Word -- ^ capacity
-  -> m (Vec arr s a)
-withCapacity sz = Vec
-  <$> newMutVar 0
-  <*> (newMutVar =<< cNew sz)
+  -> m (Vec s a)
+withCapacity sz = fmap coerce (Dyna.withCapacity sz)
 
 -- | \(O(1)\). Returns the number of elements in the vector.
 --
-length :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
-  => Vec arr s a
+length :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
   -> m Word
-length vec = readMutVar (len vec)
+length vec = Dyna.length (coerce vec)
 
 -- | \(O(1)\). Returns the maximum number of elements the vector
 --   can hold without reallocating.
 --
--- >>> vec <- withCapacity @_ @PrimArray @_ @Word 10
+-- >>> vec <- withCapacity @_ @_ @Word 10
 -- >>> push vec 42
 -- >>> assertM (== 10) (capacity vec)
-capacity :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
-  => Vec arr s a
+capacity :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
   -> m Word
-capacity vec = do
-  internal_max_capacity vec
+capacity vec = Dyna.capacity (coerce vec)
 
 -- | \(O(n)\). Reserves the minimum capacity for exactly @additional@
 --   more elements to be inserted in the given @'Vec' s a@.
@@ -226,26 +194,14 @@ capacity vec = do
 --   Capacity cannot be relied upon to be precisely minimal. Prefer 'reserve'
 --   if future insertions are expected.
 --
--- >>> vec <- fromFoldable @_ @Array @_ @Int @_ [1]
+-- >>> vec <- fromFoldable @_ @_ @Int @_ [1]
 -- >>> reserveExact vec 10
 -- >>> assertM (>= 11) (capacity vec)
-reserveExact :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
-  => Vec arr s a
+reserveExact :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
   -> Word
   -> m ()
-reserveExact vec additional = do
-  cap <- capacity vec
-  when (additional > cap) $ do
-    oldBuf <- internal_vector vec
-    oldSize <- cSizeMut oldBuf
-
-    usedCap <- length vec
-    let newSize = oldSize + additional
-
-    newBuf <- cNew newSize
-    internalCopyOverN newBuf usedCap oldBuf
-
-    writeMutVar (buf vec) newBuf
+reserveExact vec additional = Dyna.reserveExact (coerce vec) additional
 
 -- | \(O(n)\). Reserves capacity for at least @additional@ more elements
 --   to be inserted in the given @'Vec' s a@. The collection
@@ -254,50 +210,26 @@ reserveExact vec additional = do
 --   equal to @length + additional@. Does nothing if capacity
 --   is already sufficient.
 --
--- >>> vec <- fromFoldable @_ @PrimArray @_ @Int @_ [1]
+-- >>> vec <- fromFoldable @_ @_ @Int @_ [1]
 -- >>> reserve vec 10
 -- >>> assertM (>= 11) (capacity vec)
-reserve :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
-  => Vec arr s a
+reserve :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
   -> Word
   -> m ()
-reserve vec additional = do
-  needsMore <- (\len cap -> len + additional > cap)
-               <$> length vec
-               <*> capacity vec
-  when needsMore $ do
-    oldBuf <- internal_vector vec
-    oldSize <- cSizeMut oldBuf
-
-    usedCap <- length vec
-    let c = uw2d usedCap
-    let newSize = ceiling (max (_GROWTH_FACTOR * c) (c + _GROWTH_FACTOR * uw2d (oldSize + additional - usedCap)))
-
-    newBuf <- cNew newSize
-    internalCopyOverN newBuf usedCap oldBuf
-
-    writeMutVar (buf vec) newBuf
+reserve vec additional = Dyna.reserve (coerce vec) additional
 
 -- | \(O(n)\). Shrinks the capacity of the vector as much as possible.
 --
--- >>> vec <- withCapacity @_ @Array @_ @Int 10
+-- >>> vec <- withCapacity @_ @_ @Int 10
 -- >>> extend vec [1, 2, 3]
 -- >>> assertM (== 10) (capacity vec)
 -- >>> shrinkToFit vec
 -- >>> assertM (== 3) (capacity vec)
-shrinkToFit :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
-  => Vec arr s a
+shrinkToFit :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
   -> m ()
-shrinkToFit vec = do
-  shrinkable <- (\len cap -> cap > len)
-                <$> length vec
-                <*> capacity vec
-  when shrinkable $ do
-    usedCap <- length vec
-    oldBuf <- internal_vector vec
-    newBuf <- cNew usedCap
-    internalCopyOverN newBuf usedCap oldBuf
-    writeMutVar (buf vec) newBuf
+shrinkToFit vec = Dyna.shrinkToFit (coerce vec)
 
 -- | \(O(n)\). Shrinks the capacity of the vector with a lower bound.
 --
@@ -306,26 +238,18 @@ shrinkToFit vec = do
 --
 --   If the current capacity is less than the lower limit, this is a no-op.
 --
--- >>> vec <- withCapacity @_ @Array @_ @Int 10
+-- >>> vec <- withCapacity @_ @_ @Int 10
 -- >>> extend vec [1, 2, 3]
 -- >>> assertM (== 10) (capacity vec)
 -- >>> shrinkTo vec 4
 -- >>> assertM (>= 4) (capacity vec)
 -- >>> shrinkTo vec 0
 -- >>> assertM (>= 3) (capacity vec)
-shrinkTo :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
-  => Vec arr s a
+shrinkTo :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
   -> Word
   -> m ()
-shrinkTo vec minCap = do
-  cap <- capacity vec
-  when (cap > minCap) $ do
-    len <- length vec
-    let newLen = max len minCap
-    oldBuf <- internal_vector vec
-    newBuf <- cNew newLen
-    internalCopyOverN newBuf newLen oldBuf
-    writeMutVar (buf vec) newBuf
+shrinkTo vec minCap = Dyna.shrinkTo (coerce vec) minCap
 
 -- | \(O(1)\). Return the element at the given position.
 --
@@ -338,27 +262,21 @@ shrinkTo vec minCap = do
 --   repeatedly pay for bounds checking.
 --
 --   Consider using 'read' instead.
-unsafeRead :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
-  => Vec arr s a
+unsafeRead :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
   -> Word
   -> m a
-unsafeRead vec n = do
-  v <- readMutVar (buf vec)
-  cRead v n
+unsafeRead vec n = Dyna.unsafeRead (coerce vec) n
 
 -- | \(O(1)\). Return the element at the given position, or 'Nothing' if the index is out
 --   of bounds.
 --
 --   The bounds are defined as [0, length).
-read :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
-  => Vec arr s a
+read :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
   -> Word
   -> m (Maybe a)
-read vec n = do
-  len <- length vec
-  if (n >= 0 && n < len)
-    then Just <$> unsafeRead vec n
-    else pure Nothing
+read vec n = Dyna.read (coerce vec) n
 
 -- | \(O(1)\). Write a value to the vector at the given position.
 --
@@ -373,14 +291,12 @@ read vec n = do
 --   repeatedly pay for bounds checking.
 --
 --   Consider using 'write' instead.
-unsafeWrite :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
-  => Vec arr s a
+unsafeWrite :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
   -> Word
   -> a
   -> m ()
-unsafeWrite vec n x = do
-  v <- readMutVar (buf vec)
-  cWrite v n x
+unsafeWrite vec n x = Dyna.unsafeWrite (coerce vec) n x
 
 -- | \(O(1)\). Write a value to the vector at the given position.
 --
@@ -390,289 +306,151 @@ unsafeWrite vec n x = do
 --   The bounds are defined as [0, length).
 --   If you want to add an element past @length - 1@, use `push` or `extend`, which can
 --   intelligently handle resizes.
-write :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
-  => Vec arr s a
+write :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
   -> Word
   -> a
   -> m (Maybe ())
-write vec n x = do
-  len <- length vec
-  if (n >= 0 && n < len)
-    then Just <$> unsafeWrite vec n x
-    else pure Nothing
+write vec n x = Dyna.write (coerce vec) n x
 
 -- | Amortised \(O(1)\). Appends an element to the vector.
 --
--- >>> vec <- fromFoldable @_ @Array @_ @Int [1, 2]
+-- >>> vec <- fromFoldable @_ @_ @Int [1, 2]
 -- >>> push vec 3
 -- >>> assertM (== [1, 2, 3]) (toList vec)
-push :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
-  => Vec arr s a
+push :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
   -> a
   -> m ()
-push vec x = do
-  -- reserve (not reserveExact) will take care of
-  -- intelligent resizing.
-  reserve vec 1
-
-  index <- length vec
-  internal_write vec index x
-
-  modifyMutVar' (len vec) (+ 1)
+push vec x = Dyna.push (coerce vec) x
 
 -- | \(O(1)\). Removes the last element from a vector and returns it, or 'Nothing' if it
 --   is empty.
 --
--- >>> vec <- fromFoldable @_ @Array @_ @Int [1, 2, 3]
+-- >>> vec <- fromFoldable @_ @_ @Int [1, 2, 3]
 -- >>> assertM (== Just 3) (pop vec)
 -- >>> assertM (== [1, 2]) (toList vec)
-pop :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
-  => Vec arr s a
+pop :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
   -> m (Maybe a)
-pop vec = do
-  lastIndex <- length vec
-  if lastIndex == 0
-    then pure Nothing
-    else do
-      modifyMutVar' (len vec) (subtract 1)
-      Just <$> unsafeRead vec (lastIndex - 1)
+pop vec = Dyna.pop (coerce vec)
 
 -- | \(O(m)\). Extend the vector with the elements of some 'Foldable' structure.
 --
--- >>> vec <- fromFoldable @_ @Array @_ @Char ['a', 'b', 'c']
+-- >>> vec <- fromFoldable @_ @_ @Char ['a', 'b', 'c']
 -- >>> extend vec ['d', 'e', 'f']
 -- >>> assertM (== "abcdef") (toList vec)
-extend :: forall m arr s a t. (MonadPrim s m, Contiguous arr, Element arr a, Foldable t)
-  => Vec arr s a
+extend :: forall m s a t. (MonadPrim s m, Prim a, Foldable t)
+  => Vec s a
   -> t a
   -> m ()
-extend vec xs = do
-  -- TODO: inline some of this stuff
-  -- to reduce redundant reads/writes
-  traverse_ (push vec) xs
+extend vec xs = Dyna.extend (coerce vec) xs
 
 -- | \(O(n)\). Create a vector with the elements of some 'Foldable' structure.
 --
--- >>> vec <- fromFoldable @_ @Array @_ @Int [1..10]
+-- >>> vec <- fromFoldable @_ @_ @Int [1..10]
 -- >>> assertM (== [1..10]) (toList vec)
-fromFoldable :: forall m arr s a t. (MonadPrim s m, Contiguous arr, Element arr a, Foldable t)
+fromFoldable :: forall m s a t. (MonadPrim s m, Prim a, Foldable t)
   => t a
-  -> m (Vec arr s a)
-fromFoldable xs = do
-  vec <- new
-  extend vec xs
-  pure vec
+  -> m (Vec s a)
+fromFoldable xs = fmap coerce (Dyna.fromFoldable xs)
 
 -- | \(O(n)\). Create a list with the elements of the vector.
 --
--- >>> vec <- new @_ @PrimArray @_ @Int
+-- >>> vec <- new @_ @_ @Int
 -- >>> extend vec [1..5]
 -- >>> toList vec
 -- [1,2,3,4,5]
-toList :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
-  => Vec arr s a
+toList :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
   -> m [a]
-toList vec = do
-  buf <- internal_vector vec
-  sz <- length vec
-  arr <- C.freeze @arr @m @a (C.sliceMut buf 0 (uw2i sz))
-  pure (C.toList arr)
-  {-
-    TODO: switch to this
-    let go !ix !acc =
-          if ix >= 0
-          then do
-            x <- cRead buf ix
-            go (ix - 1) (x : acc)
-          else pure acc
-    go (sz - 1) []
-  -}
+toList vec = Dyna.toList (coerce vec)
 
 -- | \(O(n)\). Create a Primitive 'PrimitiveVector.Vector' copy of a vector.
-toPrimitiveVector :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a, Prim a)
-  => Vec arr s a
+toPrimitiveVector :: forall m s a. (MonadPrim s m, Prim a, Prim a)
+  => Vec s a
   -> m (PrimitiveVector.Vector a)
-toPrimitiveVector vec = do
-  toPrimitiveVectorWith (\_ a -> pure a) vec
+toPrimitiveVector vec = Dyna.toPrimitiveVector (coerce vec)
 
 -- | \(O(n)\). Create a Storable 'StorableVector.Vector' copy of a vector.
-toStorableVector :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a, Storable a)
-  => Vec arr s a
+toStorableVector :: forall m s a. (MonadPrim s m, Prim a, Storable a)
+  => Vec s a
   -> m (StorableVector.Vector a)
-toStorableVector vec = do
-  toStorableVectorWith (\_ a -> pure a) vec
+toStorableVector vec = Dyna.toStorableVector (coerce vec)
 
 -- | \(O(n)\). Create a lifted 'LiftedVector.Vector' copy of a vector.
-toLiftedVector :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
-  => Vec arr s a
+toLiftedVector :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
   -> m (LiftedVector.Vector a)
-toLiftedVector vec = do
-  toLiftedVectorWith (\_ a -> pure a) vec
+toLiftedVector vec = Dyna.toLiftedVector (coerce vec)
 
 -- | \(O(n)\). Create a Primitive 'PrimitiveVector.Vector' copy of a vector by
 -- applying a function to each element and its corresponding index.
-toPrimitiveVectorWith :: forall m arr s a b. (MonadPrim s m, Contiguous arr, Element arr a, Prim b)
+toPrimitiveVectorWith :: forall m s a b. (MonadPrim s m, Prim a, Prim a, Prim b)
   => (Word -> a -> m b)
-  -> Vec arr s a
+  -> Vec s a
   -> m (PrimitiveVector.Vector b)
-toPrimitiveVectorWith f vec = do
-  buf <- internal_vector vec
-  len <- length vec
-  PrimitiveVector.generateM (uw2i len) $ \ix -> do
-    let wix = ui2w ix
-    x <- cRead buf wix
-    f wix x
+toPrimitiveVectorWith f vec = Dyna.toPrimitiveVectorWith f (coerce vec)
 
 -- | \(O(n)\). Create a Storable 'StorableVector.Vector' copy of a vector by
 -- applying a function to each element and its corresponding index.
-toStorableVectorWith :: forall m arr s a b. (MonadPrim s m, Contiguous arr, Element arr a, Storable b)
+toStorableVectorWith :: forall m s a b. (MonadPrim s m, Prim a, Storable b)
   => (Word -> a -> m b)
-  -> Vec arr s a
+  -> Vec s a
   -> m (StorableVector.Vector b)
-toStorableVectorWith f vec = do
-  buf <- internal_vector vec
-  len <- length vec
-  StorableVector.generateM (uw2i len) $ \ix -> do
-    let wix = ui2w ix
-    x <- cRead buf wix
-    f wix x
+toStorableVectorWith f vec = Dyna.toStorableVectorWith f (coerce vec)
 
 -- | \(O(n)\). Create a lifted 'LiftedVector.Vector' copy of a vector by
 -- applying a function to each element and its corresponding index.
-toLiftedVectorWith :: forall m arr s a b. (MonadPrim s m, Contiguous arr, Element arr a)
+toLiftedVectorWith :: forall m s a b. (MonadPrim s m, Prim a)
   => (Word -> a -> m b)
-  -> Vec arr s a
+  -> Vec s a
   -> m (LiftedVector.Vector b)
-toLiftedVectorWith f vec = do
-  buf <- internal_vector vec
-  len <- length vec
-  LiftedVector.generateM (uw2i len) $ \ix -> do
-    let wix = ui2w ix
-    x <- cRead buf wix
-    f wix x
+toLiftedVectorWith f vec = Dyna.toLiftedVectorWith f (coerce vec)
 
 -- | \(O(n)\). Map over an array, modifying the elements in place.
 --
--- >>> vec <- fromFoldable @_ @Array @_ @Int [1..10]
+-- >>> vec <- fromFoldable @_ @_ @Int [1..10]
 -- >>> map (+ 1) vec
 -- >>> assertM (== [2, 3 .. 11]) (toList vec)
-map :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
+map :: forall m s a. (MonadPrim s m, Prim a)
   => (a -> a)
-  -> Vec arr s a
+  -> Vec s a
   -> m ()
-map f vec = do
-  buf <- internal_vector vec
-  len <- length vec
-  let go !ix = when (ix < len) $ do
-        a <- cRead buf ix
-        cWrite buf ix (f a)
-        go (ix + 1)
-  go 0
+map f vec = Dyna.map f (coerce vec)
 
 -- | \(O(n)\). Map strictly over an array, modifying the elements in place.
 --
--- >>> vec <- fromFoldable @_ @Array @_ @Int [1..10]
+-- >>> vec <- fromFoldable @_ @_ @Int [1..10]
 -- >>> map' (* 2) vec
 -- >>> assertM (== [2, 4 .. 20]) (toList vec)
-map' :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
+map' :: forall m s a. (MonadPrim s m, Prim a)
   => (a -> a)
-  -> Vec arr s a
+  -> Vec s a
   -> m ()
-map' f vec = do
-  buf <- internal_vector vec
-  len <- length vec
-  let go !ix = when (ix < len) $ do
-        a <- cRead buf ix
-        let !a' = f a
-        cWrite buf ix a'
-        go (ix + 1)
-  go 0
+map' f vec = Dyna.map' f (coerce vec)
 
 -- | \(O(n)\). Map over an array with a function that takes the index and its
 --   corresponding element as input, modifying the elements in place.
 --
--- >>> vec <- fromFoldable @_ @Array @_ @Int [1..10]
+-- >>> vec <- fromFoldable @_ @_ @Int [1..10]
 -- >>> imap (\ix el -> ix + 1) vec
 -- >>> assertM (== zipWith (+) [0..] [1..10]) (toList vec)
-imap :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
+imap :: forall m s a. (MonadPrim s m, Prim a)
   => (Word -> a -> a)
-  -> Vec arr s a
+  -> Vec s a
   -> m ()
-imap f vec = do
-  buf <- internal_vector vec
-  len <- length vec
-  let go !ix = when (ix < len) $ do
-        a <- cRead buf ix
-        cWrite buf ix (f ix a)
-        go (ix + 1)
-  go 0
+imap f vec = Dyna.imap f (coerce vec)
 
 -- | \(O(n)\). Map strictly over an array with a function that takes
 --   the index and its corresponding element as input, modifying the
 --   elements in place.
 --
--- >>> vec <- fromFoldable @_ @Array @_ @Int [1..10]
+-- >>> vec <- fromFoldable @_ @_ @Int [1..10]
 -- >>> imap' (\ix el -> ix + 1) vec
 -- >>> assertM (== zipWith (+) [0..] [1..10]) (toList vec)
-imap' :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
+imap' :: forall m s a. (MonadPrim s m, Prim a)
   => (Word -> a -> a)
-  -> Vec arr s a
+  -> Vec s a
   -> m ()
-imap' f vec = do
-  buf <- internal_vector vec
-  len <- length vec
-  let go !ix = when (ix < len) $ do
-        a <- cRead buf ix
-        let !a' = f ix a
-        cWrite buf ix a'
-        go (ix + 1)
-  go 0
-
---------- INTERNALS -------------
-
-internal_vector :: (MonadPrim s m, Contiguous arr, Element arr a)
-  => Vec arr s a
-  -> m (Mutable arr s a)
-internal_vector = readMutVar . buf
-
-internal_write :: (MonadPrim s m, Contiguous arr, Element arr a)
-  => Vec arr s a
-  -> Word
-  -> a
-  -> m ()
-internal_write vec i x = internal_vector vec >>= \v -> cWrite v i x
-
-internal_max_capacity :: (MonadPrim s m, Contiguous arr, Element arr a)
-  => Vec arr s a
-  -> m Word
-internal_max_capacity vec = do
-  cSizeMut =<< readMutVar (buf vec)
-
-ui2w :: Int -> Word
-ui2w = fromIntegral
-
-uw2i :: Word -> Int
-uw2i = fromIntegral
-
-uw2d :: Word -> Double
-uw2d w = int2Double (uw2i w)
-
-cNew :: (Contiguous arr, Element arr a, MonadPrim s m) => Word -> m (Mutable arr s a)
-cNew w = C.new (uw2i w)
-
-cRead :: (Contiguous arr, Element arr a, MonadPrim s m) => Mutable arr s a -> Word -> m a
-cRead m w = C.read m (uw2i w)
-
-cWrite :: (Contiguous arr, Element arr a, MonadPrim s m) => Mutable arr s a -> Word -> a -> m ()
-cWrite m w a = C.write m (uw2i w) a
-
-cSizeMut :: (Contiguous arr, Element arr a, MonadPrim s m) => Mutable arr s a -> m Word
-cSizeMut m = ui2w <$> C.sizeMut m
-
-internalCopyOverN :: (Contiguous arr, Element arr a, MonadPrim s m) => Mutable arr s a -> Word -> Mutable arr s a -> m ()
-internalCopyOverN destination sourceLen source = do
-  C.copyMut destination 0 (C.sliceMut source 0 (uw2i sourceLen))
-
-_GROWTH_FACTOR :: Double
-_GROWTH_FACTOR = 1.5
-{-# inline _GROWTH_FACTOR #-}
+imap' f vec = Dyna.imap' f (coerce vec)
