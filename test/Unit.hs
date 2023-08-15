@@ -4,10 +4,11 @@
 
 module Main (main) where
 
-import Data.Primitive.Contiguous (Array, SmallArray, PrimArray)
+import Data.Primitive.Contiguous (Array, SmallArray, PrimArray, Contiguous, Element)
 import Dyna
-import Control.Exception (try, ErrorCall)
+import Control.Exception (try, ErrorCall(..))
 import Control.Monad
+import GHC.Exts (RealWorld)
 import Prelude hiding (length, read, map)
 import Data.Vector qualified as LiftedVector
 import Data.Vector.Primitive qualified as PrimitiveVector
@@ -38,6 +39,7 @@ main = do
   t_write
   t_push
   t_pop
+  --t_insert
   t_extend
   t_fromFoldable
   t_toList
@@ -155,6 +157,33 @@ t_pop = do
   vec <- fromFoldable @_ @Array @_ @Int [1, 2, 3]
   assertM (== Just 3) (pop vec)
   assertM (== [1, 2]) (toList vec)
+
+{-
+pStuff :: (Contiguous arr, Element arr a) => Vec arr RealWorld a -> IO ()
+pStuff vec = do
+  len <- length vec
+  cap <- capacity vec
+  putStrLn $ "len=" ++ show len ++ ",cap=" ++ show cap
+
+catchBottom :: IO a -> IO ()
+catchBottom io = do
+  try @ErrorCall io >>= \case
+    Left (ErrorCallWithLocation err loc) -> do
+      putStrLn $ err
+    Right _a -> pure () --error (msg ++ ": should have thrown exception on bottom")
+-}
+
+{-
+t_insert :: IO ()
+t_insert = do
+  vec <- fromFoldable @_ @Array @_ @Int [1, 2, 3]
+  pStuff vec
+  assertM (== Just ()) (insert vec 1 4)
+  assertM (== [1, 4, 2, 3]) (toList' vec)
+  pStuff vec
+  assertM (== Just ()) (insert vec 4 5)
+  assertM (== [1, 4, 2, 3, 5]) (toList vec)
+-}
 
 t_extend :: IO ()
 t_extend = do

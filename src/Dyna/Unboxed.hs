@@ -10,7 +10,15 @@
 --   = Purpose
 --   A contiguous growable array type with heap-allocated contents, written @'Vec' s a@.
 --
---   'Vec' has /O(1)/ indexing, amortized /O(1)/ 'push' (to the end), and /O(1)/ 'pop' (from the end).
+--   'Vec' has /O(1)/ indexing, amortised /O(1)/ 'push' (to the end), and /O(1)/ 'pop' (from the end).
+--
+--   == A note about representation
+--   The type exposed by this module is backed by a 'Data.Primitive.PrimArray';
+--   and thus is most suitable for storing elements which can be completely
+--   unboxed, i.e.; non-thunk non-pointers, such as 'Int', 'Word', or 'Char'.
+--   See the 'Prim' typeclass for more details. See the module-level
+--   documentation for "Dyna" to see what other types are provided, and which
+--   may be more optimal for your use-case.
 --
 --   == A note about type variable ordering
 --   The type variables in this module will be ordered according to the following precedence list (with higher precedence meaning left-most in the forall-quantified type variables):
@@ -55,6 +63,7 @@ module Dyna.Unboxed
   , write
   , push
   , pop
+  --, insert
   , extend
   , fromFoldable
 
@@ -115,11 +124,11 @@ import Data.Vector.Storable qualified as StorableVector
 --
 --   Because of the semantics of the GHC runtime, creating a new vector will always allocate. In particular, if you construct a 'MutablePrimArray'-backed 'Vec' with capacity 0 via @'new' 0@, @'fromFoldable' []@, or @'shrinkToFit'@ on an empty 'Vec', the 16-byte header to GHC 'ByteArray#' will be allocated, but nothing else (for the curious: this is needed for 'sameMutableByteArray#' to work). Similarly, if you store zero-sized types inside such a 'Vec', it will not allocate space for them. /Note that in this case the 'Vec' may not report a 'capacity' of 0/. 'Vec' will allocate if and only if @'sizeOf (undefined :: a) '*' 'capacity' '>' 0@.
 --
---   If a 'Vec' /has/ allocated memory, then the memory it points to is on the heap (as defined by GHC's allocator), and its pointer points to 'length' initialised, contiguous elements in order (i.e. what you would see if you turned it into a list), followed by @'maxCapacity' '-' 'length'@ logically uninitialised, contiguous elements.
+--   If a 'Vec' /has/ allocated memory, then the memory it points to is on the heap (as defined by GHC's allocator), and its pointer points to 'length' initialised, contiguous elements in order (i.e. what you would see if you turned it into a list), followed by @'capacity' '-' 'length'@ logically uninitialised, contiguous elements.
 --
 --   'Vec' will never automatically shrink itself, even if completely empty. This ensures no unnecessary allocations or deallocations occur. Emptying a 'Vec' and then filling it back up to the same 'length' should incur no calls to the allocator. If you wish to free up unused memory, use 'shrinkToFit'.
 --
---   'push' and 'insert' will never (re)allocate if the reported capacity is sufficient. 'push' and 'insert' /will/ (re)allocate if @'length' '==' 'capacity'@. That is, the reported capacity is completely accurate, and can be relied on. Bulk insertion methods /may/ reallocate, even when not necessary.
+--   'push' will never (re)allocate if the reported capacity is sufficient. 'push' /will/ (re)allocate if @'length' '==' 'capacity'@. That is, the reported capacity is completely accurate, and can be relied on. Bulk insertion methods /may/ reallocate, even when not necessary.
 --
 --   'Vec' does not guarantee any particular growth strategy when reallocating when full, nor when 'reserve' is called. The strategy is basic and may prove desirable to use a non-constant growth factor. Whatever strategy is used will of course guarantee /O(1)/ amortised push.
 --
@@ -128,7 +137,7 @@ import Data.Vector.Storable qualified as StorableVector
 --   'Vec' will not specifically overwrite any data that is removed from it, but also won't specifically preserve it. Its uninitialised memory is scratch space that it may use however it wants. It will generally just do whatever is most efficient or otherwise easy to implement. Do not rely on removed data to be erased for security purposes. Even if a 'Vec' drops out of scope, its buffer may simply be reused by another 'Vec'. Even if you zero a 'Vec's memory first, this may not actually happen when you think it does because of Garbage Collection.
 newtype Vec s a = Vec (Dyna.Vec PrimArray s a)
 
--- | \(O(1)\). Constructs a new, empty @'Vec' s a'@.
+-- | \(O(1)\). Constructs a new, empty @'Vec' s a@.
 --
 -- >>> vec <- new @_ @_ @Int
 -- >>> assertM (== 0) (length vec)
@@ -137,7 +146,7 @@ new :: forall m s a. (MonadPrim s m, Prim a)
   => m (Vec s a)
 new = fmap coerce Dyna.new
 
--- | \(O(1)\). Constructs a new, empty @'Vec' s a'@.
+-- | \(O(1)\). Constructs a new, empty @'Vec' arr s a@.
 --
 --   The vector will be able to hold exactly @capacity@
 --   elements without reallocating. It is important to
@@ -146,20 +155,15 @@ new = fmap coerce Dyna.new
 --   /length/.
 --
 -- >>> vec <- withCapacity @_ @_ @Int 10
---
--- -- The vector contains no items, even though it has
--- -- capacity for more
+-- -- The vector contains no items, even though it has capacity for more
 -- >>> assertM (== 0) (length vec)
 -- >>> assertM (== 10) (capacity vec)
---
 -- -- These are all done without reallocating...
 -- >>> forM_ [1..10] $ \i -> push vec i
 -- >>> assertM (== 10) (length vec)
 -- >>> assertM (== 10) (capacity vec)
---
 -- -- ..but this may make the vector reallocate
 -- >>> push vec 11
---
 -- >>> assertM (== 11) (length vec)
 -- >>> assertM (>= 11) (capacity vec)
 withCapacity :: forall m s a. (MonadPrim s m, Prim a)
@@ -334,6 +338,24 @@ pop :: forall m s a. (MonadPrim s m, Prim a)
   => Vec s a
   -> m (Maybe a)
 pop vec = Dyna.pop (coerce vec)
+
+{-
+-- | \(O(n)\). Inserts an element at the given position, shifting all elements
+--   after it to the right. Returns 'Nothing' if the given index is greater than
+--   the length of the vector, otherwise returns 'Just' ().
+--
+-- >>> vec <- fromFoldable @_ @_ @Int [1, 2, 3]
+-- >>> insert vec 1 4
+-- >>> assertM (== [1, 4, 2, 3]) (toList vec)
+-- >>> insert vec 4 5
+-- >>> assertM (== [1, 4, 2, 3, 5]) (toList vec)
+insert :: forall m s a. (MonadPrim s m, Prim a)
+  => Vec s a
+  -> Word
+  -> a
+  -> m (Maybe ())
+insert vec ix x = Dyna.insert (coerce vec) ix x
+-}
 
 -- | \(O(m)\). Extend the vector with the elements of some 'Foldable' structure.
 --

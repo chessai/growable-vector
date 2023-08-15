@@ -5,6 +5,7 @@
   , ImportQualifiedPost
   , MagicHash
   , MultiParamTypeClasses
+  , MultiWayIf
   , NamedFieldPuns
   , PackageImports
   , PolyKinds
@@ -19,9 +20,25 @@
 
 -- |
 --   = Purpose
---   A contiguous growable array type with heap-allocated contents, written @'Vec' s a@.
+--   A contiguous growable array type with heap-allocated contents, written @'Vec' arr s a@.
 --
---   'Vec' has /O(1)/ indexing, amortized /O(1)/ 'push' (to the end), and /O(1)/ 'pop' (from the end).
+--   'Vec' has /O(1)/ indexing, amortised /O(1)/ 'push' (to the end), and /O(1)/ 'pop' (from the end).
+--
+--   == A note about representation
+--   The type exposed by this module is polymorphic in the type of array backing the data structure, functionality
+--   which is provided by the [contiguous](https://hackage.haskell.org/package/contiguous-0.6.3.0) library. There are
+--   modules providing monomorphised variants for better type inference. They are:
+--
+--   * "Dyna.Lifted": backed by 'Data.Primitive.Array'; for storing lifted
+--     elements. This suits most Haskell types.
+--   * "Dyna.Lifted.Small": backed by 'Data.Primitive.SmallArray'; also for
+--     storing lifted elements, but more efficient for <= 128 elements.
+--   * "Dyna.Unlifted": backed by 'Data.Primitive.Unlifted.Array.UnliftedArray'; for storing elements which can be unlifted (i.e.,
+--     non-thunk pointers; e.g., 'ByteArray', 'Control.Concurrent.MVar', 'Data.IORef.IORef'). See the
+--     'Data.Primitive.Unlifted.Class.PrimUnlifted' typeclass for more details.
+--   * "Dyna.Unboxed": backed by 'Data.Primitive.PrimArray'; for storing elements which can be completely unboxed
+--     (i.e., non-thunk, non-pointers; e.g., 'Int', 'Word', 'Char'). See
+--     the 'Prim' typeclass for more details.
 --
 --   == A note about type variable ordering
 --   The type variables in this module will be ordered according to the following precedence list (with higher precedence meaning left-most in the forall-quantified type variables):
@@ -67,6 +84,7 @@ module Dyna
   , write
   , push
   , pop
+  -- , insert
   , extend
   , fromFoldable
 
@@ -81,6 +99,7 @@ module Dyna
 import Control.Monad
 import Control.Monad.Primitive
 import Data.Foldable (traverse_)
+import Data.Foldable qualified as F
 import Data.Primitive
 import Data.Primitive.Contiguous (Contiguous, Element, Mutable)
 import Data.Primitive.Contiguous qualified as C
@@ -90,19 +109,6 @@ import Prelude hiding (length, read, map)
 import Data.Vector qualified as LiftedVector
 import Data.Vector.Primitive qualified as PrimitiveVector
 import Data.Vector.Storable qualified as StorableVector
-
--- $setup
--- >>> import Control.Monad (when, forM_)
--- >>> import Data.Primitive.Contiguous (Array, SmallArray, PrimArray)
--- >>> :m -Prelude
--- >>> import Prelude (IO, Bool, Show, show, (++), not, ($), error, Int, Word, (==), (>=), Maybe(..), Char, (+), (*))
--- >>> :{
--- assertM :: (Show a) => (a -> Bool) -> IO a -> IO ()
--- assertM p ma = do
---   a <- ma
---   when (not (p a)) $ do
---     error ("assertion failed: value = " ++ show a)
--- :}
 
 -- |
 --   = Indexing
@@ -139,13 +145,13 @@ import Data.Vector.Storable qualified as StorableVector
 --   'Vec' is a (pointer, capacity, length) triplet. The pointer
 --   will never be null.
 --
---   Because of the semantics of the GHC runtime, creating a new vector will always allocate. In particular, if you construct a 'MutablePrimArray'-backed 'Vec' with capacity 0 via @'new' 0@, @'fromFoldable' []@, or @'shrinkToFit'@ on an empty 'Vec', the 16-byte header to GHC 'ByteArray#' will be allocated, but nothing else (for the curious: this is needed for 'sameMutableByteArray#' to work). Similarly, if you store zero-sized types inside such a 'Vec', it will not allocate space for them. /Note that in this case the 'Vec' may not report a 'capacity' of 0/. 'Vec' will allocate if and only if @'sizeOf (undefined :: a) '*' 'capacity' '>' 0@.
+--   Because of the semantics of the GHC runtime, creating a new vector will always allocate. In particular, if you construct a 'MutablePrimArray'-backed 'Vec' with capacity 0 via @'new' 0@, @'fromFoldable' []@, or @'shrinkToFit'@ on an empty 'Vec', the 16-byte header to GHC 'ByteArray#' will be allocated, but nothing else (for the curious: this is needed for 'GHC.Exts.sameMutableByteArray#' to work). Similarly, if you store zero-sized types inside such a 'Vec', it will not allocate space for them. /Note that in this case the 'Vec' may not report a 'capacity' of 0/. 'Vec' will allocate if and only if @'sizeOf (undefined :: a) '*' 'capacity' '>' 0@.
 --
---   If a 'Vec' /has/ allocated memory, then the memory it points to is on the heap (as defined by GHC's allocator), and its pointer points to 'length' initialised, contiguous elements in order (i.e. what you would see if you turned it into a list), followed by @'maxCapacity' '-' 'length'@ logically uninitialised, contiguous elements.
+--   If a 'Vec' /has/ allocated memory, then the memory it points to is on the heap (as defined by GHC's allocator), and its pointer points to 'length' initialised, contiguous elements in order (i.e. what you would see if you turned it into a list), followed by @'capacity' '-' 'length'@ logically uninitialised, contiguous elements.
 --
 --   'Vec' will never automatically shrink itself, even if completely empty. This ensures no unnecessary allocations or deallocations occur. Emptying a 'Vec' and then filling it back up to the same 'length' should incur no calls to the allocator. If you wish to free up unused memory, use 'shrinkToFit'.
 --
---   'push' and 'insert' will never (re)allocate if the reported capacity is sufficient. 'push' and 'insert' /will/ (re)allocate if @'length' '==' 'capacity'@. That is, the reported capacity is completely accurate, and can be relied on. Bulk insertion methods /may/ reallocate, even when not necessary.
+--   'push' will never (re)allocate if the reported capacity is sufficient. 'push' /will/ (re)allocate if @'length' '==' 'capacity'@. That is, the reported capacity is completely accurate, and can be relied on. Bulk insertion methods /may/ reallocate, even when not necessary.
 --
 --   'Vec' does not guarantee any particular growth strategy when reallocating when full, nor when 'reserve' is called. The strategy is basic and may prove desirable to use a non-constant growth factor. Whatever strategy is used will of course guarantee /O(1)/ amortised push.
 --
@@ -157,7 +163,7 @@ data Vec arr s a = Vec
   , buf :: {-# unpack #-} !(MutVar s (Mutable arr s a))
   }
 
--- | \(O(1)\). Constructs a new, empty @'Vec' s a'@.
+-- | \(O(1)\). Constructs a new, empty @'Vec' arr s a@.
 --
 -- >>> vec <- new @_ @Array @_ @Int
 -- >>> assertM (== 0) (length vec)
@@ -166,7 +172,7 @@ new :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
   => m (Vec arr s a)
 new = withCapacity 0
 
--- | \(O(1)\). Constructs a new, empty @'Vec' s a'@.
+-- | \(O(1)\). Constructs a new, empty @'Vec' arr s a@.
 --
 --   The vector will be able to hold exactly @capacity@
 --   elements without reallocating. It is important to
@@ -175,20 +181,15 @@ new = withCapacity 0
 --   /length/.
 --
 -- >>> vec <- withCapacity @_ @SmallArray @_ @Int 10
---
--- -- The vector contains no items, even though it has
--- -- capacity for more
+-- -- The vector contains no items, even though it has capacity for more
 -- >>> assertM (== 0) (length vec)
 -- >>> assertM (== 10) (capacity vec)
---
 -- -- These are all done without reallocating...
 -- >>> forM_ [1..10] $ \i -> push vec i
 -- >>> assertM (== 10) (length vec)
 -- >>> assertM (== 10) (capacity vec)
---
 -- -- ..but this may make the vector reallocate
 -- >>> push vec 11
---
 -- >>> assertM (== 11) (length vec)
 -- >>> assertM (>= 11) (capacity vec)
 withCapacity :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
@@ -218,7 +219,7 @@ capacity vec = do
   internal_max_capacity vec
 
 -- | \(O(n)\). Reserves the minimum capacity for exactly @additional@
---   more elements to be inserted in the given @'Vec' s a@.
+--   more elements to be inserted in the given @'Vec' arr s a@.
 --   After calling 'reserveExact', capacity will be greater
 --   than or equal to @length + additional@. Does nothing if
 --   the capacity is already sufficient.
@@ -248,7 +249,7 @@ reserveExact vec additional = do
     writeMutVar (buf vec) newBuf
 
 -- | \(O(n)\). Reserves capacity for at least @additional@ more elements
---   to be inserted in the given @'Vec' s a@. The collection
+--   to be inserted in the given @'Vec' arr s a@. The collection
 --   may reserve more space to avoid frequent reallocations.
 --   After calling 'reserve', capacity will be greater than or
 --   equal to @length + additional@. Does nothing if capacity
@@ -418,7 +419,44 @@ push vec x = do
   index <- length vec
   internal_write vec index x
 
-  modifyMutVar' (len vec) (+ 1)
+  internal_modify_len vec (+ 1)
+
+{-
+-- | \(O(n)\). Inserts an element at the given position, shifting all elements
+--   after it to the right. Returns 'Nothing' if the given index is greater than
+--   the length of the vector, otherwise returns 'Just' ().
+--
+-- >>> vec <- fromFoldable @_ @Array @_ @Int [1, 2, 3]
+-- >>> insert vec 1 4
+-- >>> assertM (== [1, 4, 2, 3]) (toList vec)
+-- >>> insert vec 4 5
+-- >>> assertM (== [1, 4, 2, 3, 5]) (toList vec)
+insert :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
+  => Vec arr s a
+  -> Word
+  -> a
+  -> m (Maybe ())
+insert vec ix x = do
+  buf <- internal_vector vec
+  len <- length vec
+  cap <- capacity vec
+
+  when (len == cap) $ do
+    reserve vec 1
+
+  if | ix < len -> do
+         C.copyMut buf (uw2i (ix + 1)) (C.sliceMut buf (uw2i ix) (uw2i (len - ix)))
+         --(uw2i (len - ix)) (C.sliceMut buf 0 (uw2i (ix + 1)))
+         cWrite buf ix x
+         internal_set_len vec (len + 1)
+         pure (Just ())
+     | ix == len -> do
+         cWrite buf ix x
+         internal_set_len vec (len + 1)
+         pure (Just ())
+     | otherwise -> do
+         pure Nothing
+-}
 
 -- | \(O(1)\). Removes the last element from a vector and returns it, or 'Nothing' if it
 --   is empty.
@@ -434,7 +472,7 @@ pop vec = do
   if lastIndex == 0
     then pure Nothing
     else do
-      modifyMutVar' (len vec) (subtract 1)
+      internal_modify_len vec (subtract 1)
       Just <$> unsafeRead vec (lastIndex - 1)
 
 -- | \(O(m)\). Extend the vector with the elements of some 'Foldable' structure.
@@ -459,7 +497,7 @@ fromFoldable :: forall m arr s a t. (MonadPrim s m, Contiguous arr, Element arr 
   => t a
   -> m (Vec arr s a)
 fromFoldable xs = do
-  vec <- new
+  vec <- withCapacity (ui2w (F.length xs))
   extend vec xs
   pure vec
 
@@ -475,18 +513,36 @@ toList :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a)
 toList vec = do
   buf <- internal_vector vec
   sz <- length vec
-  arr <- C.freeze @arr @m @a (C.sliceMut buf 0 (uw2i sz))
-  pure (C.toList arr)
-  {-
-    TODO: switch to this
-    let go !ix !acc =
-          if ix >= 0
-          then do
-            x <- cRead buf ix
-            go (ix - 1) (x : acc)
-          else pure acc
-    go (sz - 1) []
-  -}
+  let go :: Int -> [a] -> m [a]
+      go !ix !acc =
+        if ix >= 0
+        then do
+          x <- C.read buf ix
+          go (ix - 1) (x : acc)
+        else do
+          pure acc
+  go (uw2i (sz - 1)) []
+
+{-
+toList' :: forall arr a. (Contiguous arr, Element arr a, Show a)
+  => Vec arr RealWorld a
+  -> IO [a]
+toList' vec = do
+  buf <- internal_vector vec
+  sz <- length vec
+  putStrLn $ "sz=" ++ show sz
+  let go :: Int -> [a] -> IO [a]
+      go !ix !acc =
+        if ix >= 0
+        then do
+          putStrLn $ "ix=" ++ show ix
+          x <- C.read buf ix
+          putStrLn $ "elem=" ++ show x
+          go (ix - 1) (x : acc)
+        else do
+          pure acc
+  go (uw2i (sz - 1)) []
+-}
 
 -- | \(O(n)\). Create a Primitive 'PrimitiveVector.Vector' copy of a vector.
 toPrimitiveVector :: forall m arr s a. (MonadPrim s m, Contiguous arr, Element arr a, Prim a)
@@ -647,6 +703,22 @@ internal_max_capacity :: (MonadPrim s m, Contiguous arr, Element arr a)
   -> m Word
 internal_max_capacity vec = do
   cSizeMut =<< readMutVar (buf vec)
+
+{-
+internal_set_len :: (MonadPrim s m, Contiguous arr, Element arr a)
+  => Vec arr s a
+  -> Word
+  -> m ()
+internal_set_len vec newLen = do
+  writeMutVar (len vec) newLen
+-}
+
+internal_modify_len :: (MonadPrim s m, Contiguous arr, Element arr a)
+  => Vec arr s a
+  -> (Word -> Word)
+  -> m ()
+internal_modify_len vec f = do
+  modifyMutVar' (len vec) f
 
 ui2w :: Int -> Word
 ui2w = fromIntegral
