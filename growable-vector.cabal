@@ -1,6 +1,6 @@
 cabal-version: 2.2
 name:
-  dyna
+  growable-vector
 version:
   0.1
 synopsis:
@@ -24,11 +24,11 @@ extra-doc-files:
 
 library
   exposed-modules:
-    Dyna
-    Dyna.Lifted
-    Dyna.Lifted.Small
-    Dyna.Unboxed
-    Dyna.Unlifted
+    GrowableVector
+    GrowableVector.Lifted
+    GrowableVector.Lifted.Small
+    GrowableVector.Unboxed
+    GrowableVector.Unlifted
   build-depends:
     , base >= 4.14 && < 4.20
     , contiguous >= 0.6 && < 0.7
@@ -52,7 +52,7 @@ test-suite unit
     Unit.hs
   build-depends:
     , base
-    , dyna
+    , growable-vector
     , contiguous
     , vector
   default-language:

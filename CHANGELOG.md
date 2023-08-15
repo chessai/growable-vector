@@ -1,4 +1,4 @@
-# Revision history for dyna
+# Revision history for growable-vector
 
 ## 0.1.0.0 -- YYYY-mm-dd
 

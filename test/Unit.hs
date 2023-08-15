@@ -5,7 +5,7 @@
 module Main (main) where
 
 import Data.Primitive.Contiguous (Array, SmallArray, PrimArray, Contiguous, Element)
-import Dyna
+import GrowableVector
 import Control.Exception (try, ErrorCall(..))
 import Control.Monad
 import GHC.Exts (RealWorld)

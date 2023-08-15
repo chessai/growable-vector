@@ -29,14 +29,14 @@
 --   which is provided by the [contiguous](https://hackage.haskell.org/package/contiguous-0.6.3.0) library. There are
 --   modules providing monomorphised variants for better type inference. They are:
 --
---   * "Dyna.Lifted": backed by 'Data.Primitive.Array'; for storing lifted
+--   * "GrowableVector.Lifted": backed by 'Data.Primitive.Array'; for storing lifted
 --     elements. This suits most Haskell types.
---   * "Dyna.Lifted.Small": backed by 'Data.Primitive.SmallArray'; also for
+--   * "GrowableVector.Lifted.Small": backed by 'Data.Primitive.SmallArray'; also for
 --     storing lifted elements, but more efficient for <= 128 elements.
---   * "Dyna.Unlifted": backed by 'Data.Primitive.Unlifted.Array.UnliftedArray'; for storing elements which can be unlifted (i.e.,
+--   * "GrowableVector.Unlifted": backed by 'Data.Primitive.Unlifted.Array.UnliftedArray'; for storing elements which can be unlifted (i.e.,
 --     non-thunk pointers; e.g., 'ByteArray', 'Control.Concurrent.MVar', 'Data.IORef.IORef'). See the
 --     'Data.Primitive.Unlifted.Class.PrimUnlifted' typeclass for more details.
---   * "Dyna.Unboxed": backed by 'Data.Primitive.PrimArray'; for storing elements which can be completely unboxed
+--   * "GrowableVector.Unboxed": backed by 'Data.Primitive.PrimArray'; for storing elements which can be completely unboxed
 --     (i.e., non-thunk, non-pointers; e.g., 'Int', 'Word', 'Char'). See
 --     the 'Prim' typeclass for more details.
 --
@@ -63,7 +63,7 @@
 --   As another example, 'push', which does not take an index, takes the vector, then the element.
 --
 --   Any function which accepts more than one of the types in the list, or accepts a type which is not in the list, has no guarantee about its argument order.
-module Dyna
+module GrowableVector
   ( Vec
 
   , new

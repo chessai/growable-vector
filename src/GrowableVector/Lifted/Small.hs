@@ -13,10 +13,10 @@
 --   'Vec' has /O(1)/ indexing, amortised /O(1)/ 'push' (to the end), and /O(1)/ 'pop' (from the end).
 --
 --   == A note about representation
---   The type exposed by this module is backed by an 'Data.Primitive.Array'; and thus is suitable for storing
---   lifted elements. This suits most Haskell types. See the module-level
---   documentation for "Dyna" to see what other types are provided, and which
---   may be more optimal for your use-case.
+--   The type exposed by this module is backed by a 'Data.Primitive.SmallArray'; and thus is suitable for storing
+--   lifted elements. This suits most Haskell types. This module is more efficient than "GrowableVector.Lifted" when
+--   there are <= 128 elements. See the module-level documentation for "GrowableVector" to see what other types
+--   are provided, and which one may be more optimal for your use-case.
 --
 --   == A note about type variable ordering
 --   The type variables in this module will be ordered according to the following precedence list (with higher precedence meaning left-most in the forall-quantified type variables):
@@ -40,7 +40,7 @@
 --   As another example, 'push', which does not take an index, takes the vector, then the element.
 --
 --   Any function which accepts more than one of the types in the list, or accepts a type which is not in the list, has no guarantee about its argument order.
-module Dyna.Lifted
+module GrowableVector.Lifted.Small
   ( Vec
 
   , new
@@ -73,7 +73,7 @@ module Dyna.Lifted
   , map, map', imap, imap'
   ) where
 
-import Dyna qualified
+import GrowableVector qualified
 
 import Control.Monad
 import Control.Monad.Primitive
@@ -133,7 +133,7 @@ import Data.Vector.Storable qualified as StorableVector
 --   'fromFoldable' and 'withCapacity' will produce a 'Vec' with exactly the requested capacity.
 --
 --   'Vec' will not specifically overwrite any data that is removed from it, but also won't specifically preserve it. Its uninitialised memory is scratch space that it may use however it wants. It will generally just do whatever is most efficient or otherwise easy to implement. Do not rely on removed data to be erased for security purposes. Even if a 'Vec' drops out of scope, its buffer may simply be reused by another 'Vec'. Even if you zero a 'Vec's memory first, this may not actually happen when you think it does because of Garbage Collection.
-newtype Vec s a = Vec (Dyna.Vec Array s a)
+newtype Vec s a = Vec (GrowableVector.Vec SmallArray s a)
 
 -- | \(O(1)\). Constructs a new, empty @'Vec' s a@.
 --
@@ -142,7 +142,7 @@ newtype Vec s a = Vec (Dyna.Vec Array s a)
 -- >>> assertM (== 0) (capacity vec)
 new :: forall m s a. (MonadPrim s m)
   => m (Vec s a)
-new = fmap coerce Dyna.new
+new = fmap coerce GrowableVector.new
 
 -- | \(O(1)\). Constructs a new, empty @'Vec' arr s a@.
 --
@@ -167,14 +167,14 @@ new = fmap coerce Dyna.new
 withCapacity :: forall m s a. (MonadPrim s m)
   => Word -- ^ capacity
   -> m (Vec s a)
-withCapacity sz = fmap coerce (Dyna.withCapacity sz)
+withCapacity sz = fmap coerce (GrowableVector.withCapacity sz)
 
 -- | \(O(1)\). Returns the number of elements in the vector.
 --
 length :: forall m s a. (MonadPrim s m)
   => Vec s a
   -> m Word
-length vec = Dyna.length (coerce vec)
+length vec = GrowableVector.length (coerce vec)
 
 -- | \(O(1)\). Returns the maximum number of elements the vector
 --   can hold without reallocating.
@@ -185,7 +185,7 @@ length vec = Dyna.length (coerce vec)
 capacity :: forall m s a. (MonadPrim s m)
   => Vec s a
   -> m Word
-capacity vec = Dyna.capacity (coerce vec)
+capacity vec = GrowableVector.capacity (coerce vec)
 
 -- | \(O(n)\). Reserves the minimum capacity for exactly @additional@
 --   more elements to be inserted in the given @'Vec' s a@.
@@ -203,7 +203,7 @@ reserveExact :: forall m s a. (MonadPrim s m)
   => Vec s a
   -> Word
   -> m ()
-reserveExact vec additional = Dyna.reserveExact (coerce vec) additional
+reserveExact vec additional = GrowableVector.reserveExact (coerce vec) additional
 
 -- | \(O(n)\). Reserves capacity for at least @additional@ more elements
 --   to be inserted in the given @'Vec' s a@. The collection
@@ -219,7 +219,7 @@ reserve :: forall m s a. (MonadPrim s m)
   => Vec s a
   -> Word
   -> m ()
-reserve vec additional = Dyna.reserve (coerce vec) additional
+reserve vec additional = GrowableVector.reserve (coerce vec) additional
 
 -- | \(O(n)\). Shrinks the capacity of the vector as much as possible.
 --
@@ -231,7 +231,7 @@ reserve vec additional = Dyna.reserve (coerce vec) additional
 shrinkToFit :: forall m s a. (MonadPrim s m)
   => Vec s a
   -> m ()
-shrinkToFit vec = Dyna.shrinkToFit (coerce vec)
+shrinkToFit vec = GrowableVector.shrinkToFit (coerce vec)
 
 -- | \(O(n)\). Shrinks the capacity of the vector with a lower bound.
 --
@@ -251,7 +251,7 @@ shrinkTo :: forall m s a. (MonadPrim s m)
   => Vec s a
   -> Word
   -> m ()
-shrinkTo vec minCap = Dyna.shrinkTo (coerce vec) minCap
+shrinkTo vec minCap = GrowableVector.shrinkTo (coerce vec) minCap
 
 -- | \(O(1)\). Return the element at the given position.
 --
@@ -268,7 +268,7 @@ unsafeRead :: forall m s a. (MonadPrim s m)
   => Vec s a
   -> Word
   -> m a
-unsafeRead vec n = Dyna.unsafeRead (coerce vec) n
+unsafeRead vec n = GrowableVector.unsafeRead (coerce vec) n
 
 -- | \(O(1)\). Return the element at the given position, or 'Nothing' if the index is out
 --   of bounds.
@@ -278,7 +278,7 @@ read :: forall m s a. (MonadPrim s m)
   => Vec s a
   -> Word
   -> m (Maybe a)
-read vec n = Dyna.read (coerce vec) n
+read vec n = GrowableVector.read (coerce vec) n
 
 -- | \(O(1)\). Write a value to the vector at the given position.
 --
@@ -298,7 +298,7 @@ unsafeWrite :: forall m s a. (MonadPrim s m)
   -> Word
   -> a
   -> m ()
-unsafeWrite vec n x = Dyna.unsafeWrite (coerce vec) n x
+unsafeWrite vec n x = GrowableVector.unsafeWrite (coerce vec) n x
 
 -- | \(O(1)\). Write a value to the vector at the given position.
 --
@@ -313,7 +313,7 @@ write :: forall m s a. (MonadPrim s m)
   -> Word
   -> a
   -> m (Maybe ())
-write vec n x = Dyna.write (coerce vec) n x
+write vec n x = GrowableVector.write (coerce vec) n x
 
 -- | Amortised \(O(1)\). Appends an element to the vector.
 --
@@ -324,7 +324,7 @@ push :: forall m s a. (MonadPrim s m)
   => Vec s a
   -> a
   -> m ()
-push vec x = Dyna.push (coerce vec) x
+push vec x = GrowableVector.push (coerce vec) x
 
 -- | \(O(1)\). Removes the last element from a vector and returns it, or 'Nothing' if it
 --   is empty.
@@ -335,7 +335,7 @@ push vec x = Dyna.push (coerce vec) x
 pop :: forall m s a. (MonadPrim s m)
   => Vec s a
   -> m (Maybe a)
-pop vec = Dyna.pop (coerce vec)
+pop vec = GrowableVector.pop (coerce vec)
 
 {-
 -- | \(O(n)\). Inserts an element at the given position, shifting all elements
@@ -352,7 +352,7 @@ insert :: forall m s a. (MonadPrim s m)
   -> Word
   -> a
   -> m (Maybe ())
-insert vec ix x = Dyna.insert (coerce vec) ix x
+insert vec ix x = GrowableVector.insert (coerce vec) ix x
 -}
 
 -- | \(O(m)\). Extend the vector with the elements of some 'Foldable' structure.
@@ -364,7 +364,7 @@ extend :: forall m s a t. (MonadPrim s m, Foldable t)
   => Vec s a
   -> t a
   -> m ()
-extend vec xs = Dyna.extend (coerce vec) xs
+extend vec xs = GrowableVector.extend (coerce vec) xs
 
 -- | \(O(n)\). Create a vector with the elements of some 'Foldable' structure.
 --
@@ -373,7 +373,7 @@ extend vec xs = Dyna.extend (coerce vec) xs
 fromFoldable :: forall m s a t. (MonadPrim s m, Foldable t)
   => t a
   -> m (Vec s a)
-fromFoldable xs = fmap coerce (Dyna.fromFoldable xs)
+fromFoldable xs = fmap coerce (GrowableVector.fromFoldable xs)
 
 -- | \(O(n)\). Create a list with the elements of the vector.
 --
@@ -384,25 +384,25 @@ fromFoldable xs = fmap coerce (Dyna.fromFoldable xs)
 toList :: forall m s a. (MonadPrim s m)
   => Vec s a
   -> m [a]
-toList vec = Dyna.toList (coerce vec)
+toList vec = GrowableVector.toList (coerce vec)
 
 -- | \(O(n)\). Create a Primitive 'PrimitiveVector.Vector' copy of a vector.
 toPrimitiveVector :: forall m s a. (MonadPrim s m, Prim a)
   => Vec s a
   -> m (PrimitiveVector.Vector a)
-toPrimitiveVector vec = Dyna.toPrimitiveVector (coerce vec)
+toPrimitiveVector vec = GrowableVector.toPrimitiveVector (coerce vec)
 
 -- | \(O(n)\). Create a Storable 'StorableVector.Vector' copy of a vector.
 toStorableVector :: forall m s a. (MonadPrim s m, Storable a)
   => Vec s a
   -> m (StorableVector.Vector a)
-toStorableVector vec = Dyna.toStorableVector (coerce vec)
+toStorableVector vec = GrowableVector.toStorableVector (coerce vec)
 
 -- | \(O(n)\). Create a lifted 'LiftedVector.Vector' copy of a vector.
 toLiftedVector :: forall m s a. (MonadPrim s m)
   => Vec s a
   -> m (LiftedVector.Vector a)
-toLiftedVector vec = Dyna.toLiftedVector (coerce vec)
+toLiftedVector vec = GrowableVector.toLiftedVector (coerce vec)
 
 -- | \(O(n)\). Create a Primitive 'PrimitiveVector.Vector' copy of a vector by
 -- applying a function to each element and its corresponding index.
@@ -410,7 +410,7 @@ toPrimitiveVectorWith :: forall m s a b. (MonadPrim s m, Prim b)
   => (Word -> a -> m b)
   -> Vec s a
   -> m (PrimitiveVector.Vector b)
-toPrimitiveVectorWith f vec = Dyna.toPrimitiveVectorWith f (coerce vec)
+toPrimitiveVectorWith f vec = GrowableVector.toPrimitiveVectorWith f (coerce vec)
 
 -- | \(O(n)\). Create a Storable 'StorableVector.Vector' copy of a vector by
 -- applying a function to each element and its corresponding index.
@@ -418,7 +418,7 @@ toStorableVectorWith :: forall m s a b. (MonadPrim s m, Storable b)
   => (Word -> a -> m b)
   -> Vec s a
   -> m (StorableVector.Vector b)
-toStorableVectorWith f vec = Dyna.toStorableVectorWith f (coerce vec)
+toStorableVectorWith f vec = GrowableVector.toStorableVectorWith f (coerce vec)
 
 -- | \(O(n)\). Create a lifted 'LiftedVector.Vector' copy of a vector by
 -- applying a function to each element and its corresponding index.
@@ -426,7 +426,7 @@ toLiftedVectorWith :: forall m s a b. (MonadPrim s m)
   => (Word -> a -> m b)
   -> Vec s a
   -> m (LiftedVector.Vector b)
-toLiftedVectorWith f vec = Dyna.toLiftedVectorWith f (coerce vec)
+toLiftedVectorWith f vec = GrowableVector.toLiftedVectorWith f (coerce vec)
 
 -- | \(O(n)\). Map over an array, modifying the elements in place.
 --
@@ -437,7 +437,7 @@ map :: forall m s a. (MonadPrim s m)
   => (a -> a)
   -> Vec s a
   -> m ()
-map f vec = Dyna.map f (coerce vec)
+map f vec = GrowableVector.map f (coerce vec)
 
 -- | \(O(n)\). Map strictly over an array, modifying the elements in place.
 --
@@ -448,7 +448,7 @@ map' :: forall m s a. (MonadPrim s m)
   => (a -> a)
   -> Vec s a
   -> m ()
-map' f vec = Dyna.map' f (coerce vec)
+map' f vec = GrowableVector.map' f (coerce vec)
 
 -- | \(O(n)\). Map over an array with a function that takes the index and its
 --   corresponding element as input, modifying the elements in place.
@@ -460,7 +460,7 @@ imap :: forall m s a. (MonadPrim s m)
   => (Word -> a -> a)
   -> Vec s a
   -> m ()
-imap f vec = Dyna.imap f (coerce vec)
+imap f vec = GrowableVector.imap f (coerce vec)
 
 -- | \(O(n)\). Map strictly over an array with a function that takes
 --   the index and its corresponding element as input, modifying the
@@ -473,4 +473,4 @@ imap' :: forall m s a. (MonadPrim s m)
   => (Word -> a -> a)
   -> Vec s a
   -> m ()
-imap' f vec = Dyna.imap' f (coerce vec)
+imap' f vec = GrowableVector.imap' f (coerce vec)
